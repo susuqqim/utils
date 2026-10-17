@@ -1,0 +1,21 @@
+# 凭证与运行态（绝不入库）
+config.json
+.apikey
+.apikey.*
+auths/*
+!auths/.gitkeep
+data/*
+!data/.gitkeep
+state.json
+usage.json
+last_request.json
+# 构建产物
+*.exe
+*.msi
+*.tar
+*.tar.gz
+__pycache__/
+*.pyc
+# 编辑器/系统
+.DS_Store
+Thumbs.db

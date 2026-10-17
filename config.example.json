@@ -1,0 +1,127 @@
+{
+  "listen": ":17963",
+  "api_key": "CHANGE_ME_BEFORE_USE",
+  "auth_dir": "./auths",
+  "state_file": "./data/state.json",
+  "server": {
+    "max_body_mb": 64,
+    "read_timeout": "300s"
+  },
+  "cooldown": {
+    "soft_rate": "600s",
+    "soft_rate_max": "2h"
+  },
+  "schedule": {
+    "checkin_hours": [
+      9,
+      21
+    ],
+    "growth_hours": [
+      1
+    ],
+    "travel_hours": [
+      9,
+      21
+    ],
+    "activity_hours": [
+      10
+    ],
+    "keepalive_hours": [
+      22
+    ],
+    "cat_hours": [
+      1
+    ],
+    "checkin_enabled": true,
+    "growth_enabled": true,
+    "travel_enabled": true,
+    "activity_enabled": false,
+    "keepalive_enabled": true,
+    "cat_enabled": false,
+    "blackcat_enabled": true,
+    "balance_refresh_enabled": true,
+    "balance_refresh_minutes": 5,
+    "include_disabled_in_tasks": false,
+    "resource_sync_enabled": true,
+    "blackcat_hours": [
+      3
+    ],
+    "activity_report_count": 2
+  },
+  "global": {
+    "enabled": true,
+    "chat_base": "",
+    "billing_base": ""
+  },
+  "upstream": {
+    "timeout_seconds": 600,
+    "header_timeout_seconds": 300,
+    "idle_timeout_seconds": 600,
+    "user_agent": "",
+    "client_version": "",
+    "cli_version": "",
+    "device_token": "",
+    "device_token_file": "",
+    "client_name": "WorkBuddy",
+    "passthrough_ip": false
+  },
+  "features": {
+    "sanitize_blacklist_fingerprints": true,
+    "tool_call_meta_repeat": true
+  },
+  "ui": {
+    "tray": true
+  },
+  "prompt": {
+    "mode": "passthrough",
+    "file": ""
+  },
+  "upstash": {
+    "url": "",
+    "token": ""
+  },
+  "pool": {
+    "max_in_flight": 2,
+    "breaker_threshold": 3,
+    "breaker_cooldown": "30m",
+    "breaker_cooldown_max": "6h",
+    "idle_weight_per_hour": 0.5,
+    "idle_weight_max": 5.0,
+    "chunk_quota_credits": 25.0,
+    "critical_expire_hours": 48.0,
+    "urgent_expire_hours": 72.0,
+    "near_expire_days": 7.0,
+    "safe_reserve_days": 10.0,
+    "low_credit_cutoff": 800.0,
+    "expire_urgency_weight": 15.0,
+    "expire_power": 1.5,
+    "paced_breathing_enabled": true,
+    "paced_tier2_consecutive_max": 3,
+    "credit_floor": 0,
+    "adaptive_chunking": true,
+    "tier_cheap_quota": 3000,
+    "tier_normal_quota": 6000,
+    "tier_flagship_quota": 6000,
+    "tier_cheap_max_reqs": 30,
+    "tier_normal_max_reqs": 15,
+    "tier_flagship_max_reqs": 8,
+    "tier_cheap_cost_cutoff": 20,
+    "tier_flagship_cost_cutoff": 800,
+    "tier_unknown_quota": 3000,
+    "tier_unknown_max_reqs": 20
+  },
+  "session_sticky": {
+    "enabled": true,
+    "ttl": "30m",
+    "gc_interval": "5m"
+  },
+  "api_key_previous": "",
+  "reqlog": {
+    "enabled": false,
+    "dir": "reqlog",
+    "retain_days": 7,
+    "max_mb": 50
+  },
+  "enterprise_gate": false,
+  "hidden_models": []
+}

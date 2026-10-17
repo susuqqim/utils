@@ -1,0 +1,29 @@
+services:
+  wb2api:
+    # 离线镜像（由 image/workbuddy2api-offline.tar.gz 通过 docker load 导入）。
+    # 若该镜像不存在，docker compose up 会退回用下面的 build 从源码构建（需联网）。
+    image: ${WB2A_IMAGE:-workbuddy2api:offline}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${WB2A_CONTAINER:-workbuddy2api}
+    restart: unless-stopped
+    init: true
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      # 端口默认 17963：避开 Windows Hyper-V/WSL 动态预留端口区间 (7798-7897)。
+      # 被占用时换端口： WB2A_PORT=27963 ./wb2api.sh up
+      # 仅绑定宿主机回环地址 127.0.0.1，不暴露到局域网。
+      - "127.0.0.1:${WB2A_PORT:-17963}:17963"
+    volumes:
+      # 挂载凭证与状态持久化目录（entrypoint 自动自愈权限）
+      - ./auths:/app/auths
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+      - ./config.json:/app/config.json
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"

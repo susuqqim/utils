@@ -1,0 +1,25 @@
+auths/
+data/
+*.tmp
+.git/
+.gitignore
+docs/
+scripts/__pycache__/
+
+# 避免宿主机编译产物上传到 Docker 上下文（可节约数十MB传输时间）
+/login
+/credit
+/wb2api
+/signin_bin
+/trial_bin
+/activity_bin
+wb2api_linux
+*.exe
+
+# 宿主机运行时配置文件不打入镜像（由挂载覆盖）
+config.json
+
+# 说明文档与开发记录
+*.md
+*.sha256
+*.txt

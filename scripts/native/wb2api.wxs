@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  wb2api.wxs —— WorkBuddy2API 每用户（per-user）MSI 安装器（WiX v4+ / v7 语法）。
+
+  设计要点（详见路线图 §R）：
+    · 每用户安装到 %LOCALAPPDATA%\workbuddy2api，**免管理员/UAC**，与 install.ps1 同路径同语义，
+      老用户可用 MSI 无缝覆盖升级。
+      ⚠️ PATH 项**不保证去重**：若先用 install.ps1（已追加同一目录）再装 MSI，会多出一条重复项
+      （MSI 的 Environment 是追加语义；卸载只移除自己那条）。install.ps1 → MSI 升级路径下请注意。
+    · 安装时经自定义动作调用二进制自带的 `autostart on` 注册 HKCU Run（与 wb2api autostart on
+      完全同一条代码路径，避免在 MSI 里重复实现路径推导）；`msiexec AUTOSTART=0` 可跳过。
+    · 卸载时先 `autostart off` 再 `taskkill` 停进程，最后删文件；数据目录默认保留（REMOVEDATA=1 才删）。
+    · 快捷方式：桌面 + 开始菜单（启动/停止/管理面板）。管理面板用 .url 直开浏览器，不弹控制台。
+
+  构建：由 build-msi.ps1 传入 $(Version) 与 $(StageDir)（预处理器变量）。
+
+  ⚠️ 组件 GUID 一经发布**不可更改**（MSI 以组件为升级/引用单位）；
+     UpgradeCode 同理，改了会导致新旧版本无法相互升级。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package Name="WorkBuddy2API"
+           Manufacturer="WorkBuddy2API"
+           Version="$(Version)"
+           UpgradeCode="8F3B2C1A-7D4E-4A9B-9C21-5E6F7A8B9C0D"
+           Scope="perUser"
+           Compressed="yes"
+           Language="2052">
+
+    <SummaryInformation Description="WorkBuddy2API 本地网关（每用户安装）" Manufacturer="WorkBuddy2API"/>
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="已安装更新的 WorkBuddy2API 版本，请先卸载后再安装旧版。"/>
+    <MediaTemplate EmbedCab="yes"/>
+
+    <Icon Id="AppIcon" SourceFile="$(StageDir)\wb2api.ico"/>
+    <Property Id="ARPPRODUCTICON" Value="AppIcon"/>
+    <Property Id="ARPNOMODIFY" Value="1"/>
+    <Property Id="ARPHELPLINK" Value="http://127.0.0.1:17963/panel/"/>
+
+    <!-- 安装期开关（可 msiexec /i x.msi AUTOSTART=0 REMOVEDATA=1 覆盖） -->
+    <Property Id="AUTOSTART" Value="1" Secure="yes"/>
+    <Property Id="REMOVEDATA" Value="0" Secure="yes"/>
+
+    <!-- 每用户安装必须显式写 **ALLUSERS=2 + MSIINSTALLPERUSER=1** 这一对。
+         实测（WiX 4.0.6）：只写 Scope="perUser" 时 Property 表里两者皆无，
+         Windows 把它当"非托管每用户安装"（日志：Product is not managed）——
+         安装报成功，但"程序和功能"里查不到、也无法卸载；
+         只补 MSIINSTALLPERUSER 而缺 ALLUSERS=2 时，MSI 运行期会直接
+         `Deleting MSIINSTALLPERUSER property`，结果同样是非托管。
+         切记这是 Windows Installer 的固定组合语义，不是可选项。 -->
+    <Property Id="ALLUSERS" Value="2" Secure="yes"/>
+    <Property Id="MSIINSTALLPERUSER" Value="1" Secure="yes"/>
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <!-- 目录名参数化：默认 workbuddy2api；构建"测试 MSI"时改成别的名字，
+           即可在隔离路径做真实安装/卸载验证，完全不碰生产程序目录。 -->
+      <Directory Id="INSTALLFOLDER" Name="$(InstallDirName)"/>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="WorkBuddy2API"/>
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder"/>
+
+    <!-- ── 主文件 ─────────────────────────────────────────────────
+         注意（ICE38）：装到用户 profile 的组件，KeyPath 必须是 HKCU 注册表值而非文件，
+         故每个文件组件都带一个 HKCU 标记值作 KeyPath；卸载时 MSI 自动清理。
+         （ICE64）INSTALLFOLDER 需在 RemoveFile 表中登记（由 RemoveFolder 生成），
+         否则卸载后空目录会残留。                                            -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="cmpCore" Guid="{1B238DC1-5767-BA62-1C07-027195DB4F62}">
+        <File Id="filCore" Source="$(StageDir)\wb2api-core.exe"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API\Components" Name="Core"
+                       Type="integer" Value="1" KeyPath="yes"/>
+        <RemoveFolder Id="rfInstallFolder" Directory="INSTALLFOLDER" On="uninstall"/>
+      </Component>
+
+      <Component Id="cmpLauncher" Guid="{3E9B677E-8EE8-F7B8-B16A-05FFA3A02F4D}">
+        <File Id="filLauncher" Source="$(StageDir)\wb2api.cmd"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API\Components" Name="Launcher"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpConfigExample" Guid="{8236CDD8-335A-7811-5629-6D0C04DA8917}">
+        <File Id="filConfigExample" Source="$(StageDir)\config.example.json"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API\Components" Name="ConfigExample"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpPanelUrl" Guid="{D36ACDB0-B589-A5B7-7BE8-E369B241EEB5}">
+        <!-- 管理面板 URL 快捷方式的目标文件（InternetShortcut 格式）。
+             其内容里的 IconFile 用**相对路径** wb2api.ico —— 与 .url 同目录（见 cmpIcon），
+             这样任何用户、任何安装位置都能取到图标（绝对路径会把构建机路径烧进去）。 -->
+        <File Id="filPanelUrl" Source="$(StageDir)\wb2api-panel.url"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API\Components" Name="PanelUrl"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpIcon" Guid="{2F4E8A31-6C05-4D7E-9B18-3A5C0D9E7F42}">
+        <!-- 供 .url 的 IconFile（相对路径）引用 -->
+        <File Id="filIcon" Source="$(StageDir)\wb2api.ico"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API\Components" Name="Icon"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpGuide" Guid="{8B3686F3-D2FF-DC08-9EE4-50D9AD251C82}">
+        <File Id="filGuide" Source="$(StageDir)\使用指南.html"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API\Components" Name="Guide"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+
+      <Component Id="cmpQuickstart" Guid="{6A27D989-16D5-4E9F-E6AE-A26123658025}">
+        <File Id="filQuickstart" Source="$(StageDir)\README-quickstart.md"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API\Components" Name="Quickstart"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+
+      <!-- 把安装目录追加进 per-user PATH（System="no"）；卸载时 MSI 自动移除该项 -->
+      <Component Id="cmpPath" Guid="{38A18344-D741-5D0C-E328-D78AD100A9F9}">
+        <Environment Id="EnvPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last"
+                     Action="set" System="no" Permanent="no"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API" Name="PathInstalled"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+    </ComponentGroup>
+
+    <!-- ── 快捷方式：开始菜单 ───────────────────────────────────── -->
+    <ComponentGroup Id="AppShortcuts" Directory="AppShortcutFolder">
+      <Component Id="cmpStartMenu" Guid="{08F9A38B-BBA7-E733-57D6-3BCD1D2870D9}">
+        <Shortcut Id="scSmStart" Name="启动网关"
+                  Target="[INSTALLFOLDER]wb2api.cmd" Arguments="start"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="no"/>
+        <Shortcut Id="scSmStop" Name="停止网关"
+                  Target="[INSTALLFOLDER]wb2api.cmd" Arguments="stop"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="no"/>
+        <Shortcut Id="scSmPanel" Name="打开管理面板"
+                  Target="[INSTALLFOLDER]wb2api-panel.url" Icon="AppIcon" Advertise="no"/>
+        <RemoveFolder Id="rfAppShortcutFolder" On="uninstall"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API" Name="StartMenuInstalled"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+
+      <!-- ── 快捷方式：桌面 ─────────────────────────────────────── -->
+      <Component Id="cmpDesktop" Guid="{CF76ED71-401D-04C0-C325-A17FB0016BC8}" Directory="DesktopFolder">
+        <Shortcut Id="scDeskStart" Name="WorkBuddy2API"
+                  Target="[INSTALLFOLDER]wb2api.cmd" Arguments="start"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="no"/>
+        <Shortcut Id="scDeskPanel" Name="WorkBuddy2API 管理面板"
+                  Target="[INSTALLFOLDER]wb2api-panel.url" Icon="AppIcon" Advertise="no"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API" Name="DesktopInstalled"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="WorkBuddy2API 网关（核心）" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="AppFiles"/>
+      <ComponentGroupRef Id="AppShortcuts"/>
+    </Feature>
+
+    <!-- ── 自定义动作 ───────────────────────────────────────────── -->
+    <!-- 安装后注册开机自启（走二进制自带的 autostart，路径推导与 CLI 完全一致）。 -->
+    <!--
+      ⚠️ $(NoSideEffectCA)=1 时，**剔除全部会作用于系统或其它实例的自定义动作**
+         （自启注册/注销、taskkill 停进程、删除数据目录），供构建"测试 MSI"。
+         这些动作的作用域是全局的：HKCU Run 值名 WorkBuddy2API 与映像名 wb2api-core.exe
+         在生产与测试实例之间**共用**，测试包里若保留，安装/卸载会清掉生产自启项、
+         甚至 taskkill 掉生产进程（2026-10-02 真实踩过：卸载测试包误杀了生产进程）。
+         因此测试包必须整体剔除；自定义动作本身只能在**独立虚拟机**里验证。
+    -->
+    <?if $(NoSideEffectCA) != "1" ?>
+    <CustomAction Id="CaAutostartOn" FileRef="filCore" ExeCommand="autostart on"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <!-- 卸载：先注销自启 -->
+    <CustomAction Id="CaAutostartOff" FileRef="filCore" ExeCommand="autostart off"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <!-- 卸载：停进程，最后 MSI 删文件（Directory / Impersonate 理由同 CaStopAppBeforeInstall） -->
+    <CustomAction Id="CaStopApp" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]taskkill.exe /IM wb2api-core.exe /F"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <!-- 装文件**之前**先停掉可能在运行的网关：否则 wb2api-core.exe 被占用，新版写不进去。
+         注意（ICE105）：每用户包不能用 NoImpersonate，且 SystemFolder 不是合法的工作目录，
+         故 Directory 用安装目录、可执行文件用 [SystemFolder] 属性显式指定。
+         锚定 InstallInitialize 而非 InstallFiles：后者在"已安装产品再装一次"的维护序列里
+         可能不被调度，导致本动作被连带跳过。
+         安装目录此时可能尚不存在（全新安装）→ CreateProcess 失败但 Return="ignore"，
+         全新安装本就没有进程要停，属预期。 -->
+    <CustomAction Id="CaStopAppBeforeInstall" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]taskkill.exe /IM wb2api-core.exe /F"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <!-- 安装后、注册自启**之前**，先把数据目录与初始 config.json 建好。
+         2026-10-03 在 VM（干净机器）实测暴露两个缺陷，根因都是"数据目录不存在"：
+           (a) 启动器 wb2api.cmd 有硬校验 `if not exist %DIR% → exit 1`，
+               于是桌面"启动网关"快捷方式点了直接报错退出；
+           (b) 其后的 `autostart on` 工作目录是 System32，探测不到配置就退化为 CWD，
+               把自启写成 -config "C:\Windows\system32\config.json"。
+         先播种就不再依赖"用户曾手动跑过一次"。目录已存在时为空操作（mkdir 报错被 2>nul 吞掉），
+         且**绝不覆盖**已存在的用户 config.json。
+         拆成两条 CA：WiX 的 CustomAction.Target 列有长度上限，单条塞 530+ 字符会触发
+         ICE03（String overflow），存在被工具链截断的隐患。 -->
+    <CustomAction Id="CaSeedDataDir" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]cmd.exe /c mkdir &quot;%USERPROFILE%\.workbuddy2api\auths&quot; &quot;%USERPROFILE%\.workbuddy2api\data&quot; &quot;%USERPROFILE%\.workbuddy2api\logs&quot; 2&gt;nul"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <CustomAction Id="CaSeedConfig" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]cmd.exe /c if not exist &quot;%USERPROFILE%\.workbuddy2api\config.json&quot; copy /y &quot;[INSTALLFOLDER]config.example.json&quot; &quot;%USERPROFILE%\.workbuddy2api\config.json&quot;"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <!-- 可选：连数据目录一起删（默认保留用户数据） -->
+    <CustomAction Id="CaRemoveData" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]cmd.exe /c rd /s /q &quot;%USERPROFILE%\.workbuddy2api&quot;"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <?endif?>
+
+    <InstallExecuteSequence>
+      <?if $(NoSideEffectCA) != "1" ?>
+      <!-- 锚定 InstallInitialize 而不是 InstallFiles：后者在"已安装产品再装一次"的
+           维护序列里可能根本不被调度，导致该动作被连带跳过（2026-10-03 VM 实测：
+           第二次 msiexec 未杀进程、卡在文件占用）。InstallInitialize 在安装/维护序列
+           中都必然存在。 -->
+      <Custom Action="CaStopAppBeforeInstall" After="InstallInitialize" Condition="NOT REMOVE"/>
+      <Custom Action="CaSeedDataDir" After="InstallFiles" Condition="NOT REMOVE"/>
+      <Custom Action="CaSeedConfig" After="CaSeedDataDir" Condition="NOT REMOVE"/>
+      <Custom Action="CaAutostartOn" After="CaSeedConfig"
+              Condition="NOT REMOVE AND AUTOSTART&lt;&gt;&quot;0&quot;"/>
+      <Custom Action="CaAutostartOff" Before="CaStopApp" Condition="REMOVE~=&quot;ALL&quot;"/>
+      <Custom Action="CaStopApp" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot;"/>
+      <Custom Action="CaRemoveData" After="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot; AND REMOVEDATA=&quot;1&quot;"/>
+      <?endif?>
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>

@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkBuddy2API · 控制台</title>
+<style>
+/* ── 设计令牌：明暗两套独立色板 ─────────────────────────────────────────
+   冷石墨基调（仪表盘语言，非营销页）：底色分层 + 单一靛蓝强调（仅交互），
+   语义色只给状态。等宽数字承载所有观测值，tabular-nums 对齐。 */
+:root {
+  --bg: #0c0e14; --surface: #14171f; --surface-2: #1a1e28; --raise: #202531;
+  --line: #262c3a; --line-soft: #1e232e;
+  --ink: #e8ebf2; --ink-2: #a8b0c2; --ink-3: #6b7488;
+  --accent: #5b7cfa; --accent-ink: #ffffff; --accent-soft: rgba(91,124,250,.13);
+  --ok: #3ddc97; --ok-soft: rgba(61,220,151,.12);
+  --warn: #f5b544; --warn-soft: rgba(245,181,68,.12);
+  --bad: #f0655f; --bad-soft: rgba(240,101,95,.12);
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.5);
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+[data-theme="light"] {
+  --bg: #f4f5f8; --surface: #ffffff; --surface-2: #f8f9fb; --raise: #ffffff;
+  --line: #e2e5ec; --line-soft: #eceef3;
+  --ink: #14171f; --ink-2: #545c6e; --ink-3: #8b93a5;
+  --accent: #3d5fe0; --accent-ink: #ffffff; --accent-soft: rgba(61,95,224,.09);
+  --ok: #0f9d63; --ok-soft: rgba(15,157,99,.1);
+  --warn: #b47611; --warn-soft: rgba(180,118,17,.11);
+  --bad: #cf3b34; --bad-soft: rgba(207,59,52,.09);
+  --shadow: 0 1px 2px rgba(16,20,32,.06), 0 8px 24px -14px rgba(16,20,32,.14);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--ink); font: 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: var(--accent-soft); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ── 壳层：左侧导航 + 主区 ─────────────────────────────────────────── */
+.shell { display: grid; grid-template-columns: 208px 1fr; min-height: 100vh; }
+.nav {
+  background: var(--surface); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
+}
+.brand { padding: 20px 18px 16px; border-bottom: 1px solid var(--line-soft); }
+.brand .name { font-weight: 650; letter-spacing: -.01em; font-size: 15px; }
+.brand .sub { color: var(--ink-3); font-size: 11.5px; font-family: var(--mono); margin-top: 3px; }
+.nav ul { list-style: none; padding: 10px 8px; flex: 1; }
+.nav a {
+  display: flex; align-items: center; gap: 10px; padding: 8px 11px; margin-bottom: 2px;
+  color: var(--ink-2); text-decoration: none; border-radius: 7px; font-size: 13.5px;
+}
+.nav a:hover { background: var(--surface-2); color: var(--ink); }
+.nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
+.nav a svg { width: 15px; height: 15px; flex: none; opacity: .85; }
+.nav .sig { padding: 12px 16px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--ink-3); }
+.nav .sig .row { display: flex; align-items: center; gap: 7px; }
+.nav-sys {
+  padding: 8px 10px; border-top: 1px solid var(--line-soft);
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.nav-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 5px 8px; font-size: 12px; border-radius: 6px;
+  background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line);
+  cursor: pointer; white-space: nowrap; transition: all .12s;
+}
+.nav-btn:hover:not(:disabled) {
+  background: var(--raise); color: var(--ink); border-color: var(--accent);
+}
+.nav-btn svg { width: 13px; height: 13px; flex: none; opacity: .85; }
+.nav-btn.danger { color: var(--ink-2); }
+.nav-btn.danger:hover:not(:disabled) {
+  color: var(--bad); border-color: var(--bad); background: var(--bad-soft);
+}
+/* 日志频道筛选 chips */
+.chips { display: inline-flex; gap: 4px; align-items: center; }
+.chips .chip { padding: 2px 10px; border-radius: 999px; }
+.chips .chip.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 550; }
+.ln .lch { font-style: normal; display: inline-block; font-size: 10px; line-height: 1; padding: 2px 6px; border-radius: 4px; margin-right: 8px; vertical-align: 1px; }
+.ln .lch.c-task { background: var(--accent-soft); color: var(--accent); }
+.ln .lch.c-chat { background: var(--ok-soft); color: var(--ok); }
+.ln .lch.c-sys { background: var(--surface-2); color: var(--ink-3); }
+
+/* 任务中心 */
+.tc-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 42px 16px; color: var(--ink-3); }
+.tc-empty svg { width: 42px; height: 42px; opacity: .55; margin-bottom: 6px; }
+.tc-empty .t { font-weight: 550; color: var(--ink-2); }
+.tc-empty .d { font-size: 12.5px; max-width: 34em; text-align: center; }
+.sel-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); white-space: nowrap; flex: none; }
+.sel-note select {
+  appearance: none; -webkit-appearance: none;
+  background: var(--surface-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 8px center;
+  border: 1px solid var(--line); border-radius: 7px; color: var(--ink);
+  font: 550 12px var(--sans); padding: 3px 24px 3px 9px; cursor: pointer;
+}
+.qprog { display: flex; align-items: center; gap: 12px; padding: 12px 16px 0; }
+.qprog .qbar { flex: 1; height: 4px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.qprog .qbar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .5s ease; }
+.qprog .note { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.qgroup { padding: 4px 0 10px; }
+.qgroup + .qgroup { border-top: 1px solid var(--line-soft); }
+.qgroup header {
+  display: flex; align-items: baseline; gap: 9px; padding: 10px 16px 6px;
+  background: none; border: none; box-shadow: none;
+}
+.qgroup header .nm { font-weight: 600; font-size: 13.5px; }
+.qgroup header .cnt { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.qrow {
+  display: grid; grid-template-columns: 118px 1fr 52px 84px minmax(120px, 240px);
+  gap: 10px; align-items: center; padding: 7.5px 16px; font-size: 13px;
+}
+.qrow:hover { background: var(--surface-2); }
+.qrow .code { font: 11.5px/1.35 var(--mono); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qrow .name { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.qrow .name .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qrow .prog { font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; }
+.qrow .st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.qrow .msg { font-size: 12px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.qdot.done { background: var(--ok); }
+.qdot.run { background: var(--accent); animation: qpulse 1.2s ease-in-out infinite; }
+.qdot.wait { background: none; border: 1.5px solid var(--ink-3); }
+.qdot.err { background: var(--bad); }
+.qdot.skip { background: var(--ink-3); }
+@keyframes qpulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .qdot.run { animation: none; } }
+.srow { display: grid; grid-template-columns: minmax(150px, 210px) 1fr auto; gap: 14px; align-items: center; padding: 13px 16px; }
+.srow + .srow { border-top: 1px solid var(--line-soft); }
+.srow .who .nm { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .who .id { font: 10.5px var(--mono); color: var(--ink-3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shead {
+  display: grid; grid-template-columns: minmax(150px, 210px) 1fr auto;
+  gap: 14px; align-items: center; padding: 9px 16px 7px;
+  font-size: 11.5px; color: var(--ink-3); border-bottom: 1px solid var(--line-soft);
+}
+.shead .stasks span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stasks { display: grid; grid-template-columns: repeat(5, minmax(64px, 1fr)); gap: 6px 10px; }
+.stask { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.stask .mark { font-size: 13px; line-height: 1; width: 14px; text-align: center; flex: none; }
+.stask.ok .mark { color: var(--ok); }
+.stask.warn .mark { color: var(--warn); } .stask.warn .fr { color: var(--warn); font-variant-numeric: tabular-nums; }
+.stask.todo { color: var(--ink-3); }
+.srow .luck { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.srow .luck svg { width: 14px; height: 14px; opacity: .7; }
+.srow .err { grid-column: 1 / -1; font-size: 12px; color: var(--bad); margin-top: -4px; }
+.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.pulse.bad { background: var(--bad); }
+.pulse.warn { background: var(--warn); }
+
+.main { min-width: 0; display: flex; flex-direction: column; }
+.topbar {
+  display: flex; align-items: center; gap: 14px; padding: 14px 24px;
+  border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: 0; z-index: 20;
+}
+.topbar h2 { font-size: 15.5px; font-weight: 620; letter-spacing: -.01em; }
+.topbar .sep { color: var(--ink-3); }
+.topbar .meta { color: var(--ink-3); font-size: 12px; font-family: var(--mono); }
+.topbar .grow { flex: 1; }
+.view { padding: 22px 24px 60px; max-width: 1180px; width: 100%; }
+.view[hidden] { display: none; }
+
+/* ── 控件 ─────────────────────────────────────────────────────────── */
+button {
+  font: inherit; color: var(--ink); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 13px; cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 550; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+button.ghost { background: transparent; }
+button.danger { color: var(--bad); }
+button.danger:hover:not(:disabled) { border-color: var(--bad); }
+button.xs { padding: 3.5px 9px; font-size: 12.5px; border-radius: 6px; }
+button.icon { padding: 7px 9px; }
+input, select {
+  font: inherit; color: var(--ink); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 11px; width: 100%;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+input.invalid { border-color: var(--bad); background: var(--bad-soft); }
+input.invalid:focus { border-color: var(--bad); }
+input[type=checkbox] { width: auto; accent-color: var(--accent); }
+label.fld { display: block; margin-bottom: 14px; }
+label.fld > .lb { display: block; font-size: 12.5px; color: var(--ink-2); margin-bottom: 5px; }
+label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); margin-top: 4px; }
+.inline { display: flex; align-items: center; gap: 9px; }
+
+/* ── 统计条（观测区）──────────────────────────────────────────────── */
+.stats {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  border: 1px solid var(--line); border-radius: 11px; background: var(--surface);
+  overflow: hidden; margin-bottom: 20px; box-shadow: var(--shadow);
+}
+@media (max-width: 980px) { .stats { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 560px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+.stat { padding: 14px 17px; border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+.stat .v { font: 600 26px/1.15 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; white-space: nowrap; }
+.stat .k { color: var(--ink-3); font-size: 11.5px; margin-top: 5px; }
+.stat.good .v { color: var(--ok); } .stat.warn .v { color: var(--warn); } .stat.bad .v { color: var(--bad); }
+
+/* ── 面板块 ───────────────────────────────────────────────────────── */
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 11px; box-shadow: var(--shadow); margin-bottom: 20px; overflow: hidden; }
+.box > header { display: flex; align-items: center; gap: 12px; padding: 12px 17px; border-bottom: 1px solid var(--line-soft); }
+.box > header h3 { font-size: 13.5px; font-weight: 600; }
+.box > header h3 .hint { font-size: 11.5px; font-weight: 400; color: var(--ink-3); margin-left: 6px; }
+.box > header .grow { flex: 1; }
+.box > header .note { color: var(--ink-3); font-size: 12px; }
+.box .pad { padding: 17px; }
+
+/* ── 账号表（签名元素：健康色条 + 积分量条）───────────────────────── */
+.tbl-wrap { overflow-x: auto; }
+.acc { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+.acc th {
+  text-align: left; font-weight: 500; font-size: 11.5px; color: var(--ink-3);
+  padding: 9px 11px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.acc td { padding: 11px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.acc tr:last-child td { border-bottom: none; }
+.acc tbody tr:hover { background: var(--surface-2); }
+/* 健康色条用真实单元格（td.mark）实现，而不是 tr::before 伪元素：
+   伪元素在表格行内会被浏览器当作匿名单元格插入行首，整行内容右移一列、
+   与表头错位——窗口越宽列越宽越明显。 */
+.acc .mark { width: 3px; min-width: 3px; padding: 0; }
+.acc .mark i { display: block; width: 3px; height: 100%; min-height: 36px; background: var(--ok); }
+.acc tbody tr.cool .mark i { background: var(--warn); }
+.acc tbody tr.off .mark i { background: var(--bad); }
+/* 模型表无色条（健康指示只属于账号表）。 */
+.acc.md .mark { display: none; }
+/* 操作列用 width:1px + nowrap 的经典技巧：列宽恰为内容宽，其余列按内容自适应 */
+.acc .c-acts { width: 1px; white-space: nowrap; }
+/* 档位标签列：允许换行在标签之间（不拆字），并给足最小宽度 */
+.acc .efs { min-width: 150px; }
+.acc .efs .tag { margin: 1px 0; }
+/* 模型表：紧凑一些，7 列在常见窗口下尽量免横向滚动 */
+.acc.md { min-width: 700px; }
+.acc.md th, .acc.md td { padding: 10px 9px; }
+.who { min-width: 118px; max-width: 200px; }
+#taskTable .who { max-width: 360px; }
+#taskTable .who .nm, #taskTable .who .id { white-space: normal; word-break: break-all; }
+.who .nm { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who .id { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.realm-tag { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font: 500 10px/1 var(--sans); color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); vertical-align: 1px; }
+.realm-row { display: flex; align-items: center; gap: 14px; padding: 4px 0 10px; }
+.realm-opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
+.realm-opt input { accent-color: var(--accent); margin: 0; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-cell { min-width: 268px; }
+.usage-line {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  font: 600 11.5px/1.25 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.usage-item {
+  display: inline-flex; align-items: baseline; padding: 3px 6px; border: 1px solid transparent;
+  border-radius: 5px; background: var(--surface-2);
+}
+.usage-item b { font-weight: 650; }
+.usage-item em { margin-left: 2px; font: 500 10px/1 var(--sans); font-style: normal; }
+.usage-count { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 18%, transparent); }
+.usage-total {
+  color: var(--accent); background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.usage-total b { font-size: 12px; letter-spacing: -.02em; }
+.usage-total em { color: var(--ink-2); }
+.usage-latency { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 18%, transparent); }
+.usage-rate { color: var(--ok); background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 18%, transparent); }
+.cred { min-width: 84px; }
+.cred .n { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 13px; white-space: nowrap; }
+.cred .n .of { color: var(--ink-3); font-size: 11px; }
+.bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 5px; overflow: hidden; max-width: 88px; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 500; white-space: nowrap;
+}
+.tag.ok { background: var(--ok-soft); color: var(--ok); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); }
+.tag.bad { background: var(--bad-soft); color: var(--bad); }
+.tag.mute { background: var(--surface-2); color: var(--ink-3); border: 1px solid var(--line); }
+.rate-limits { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.rate-limit {
+  display: flex; align-items: baseline; gap: 6px; padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, var(--warn) 24%, var(--line));
+  border-radius: 6px; background: var(--warn-soft); font-size: 11.5px; line-height: 1.35;
+}
+.rate-limit.model-unavailable { border-color: var(--line); background: var(--surface-2); color: var(--ink-3); }
+.rate-limit b { color: var(--ink); font-family: var(--mono); font-weight: 600; }
+.rate-limit span { color: var(--ink-2); }
+
+/* 强制路由与本地改造调度标签 */
+.tag.pinned {
+  background: color-mix(in srgb, #f59e0b 16%, var(--surface));
+  color: #d97706;
+  border: 1px solid color-mix(in srgb, #f59e0b 38%, transparent);
+  font-weight: 600;
+}
+.tag.tier {
+  padding: 1px 7px;
+  font-size: 10.5px;
+  border-radius: 4px;
+}
+.tag.tier.t1 { background: var(--bad-soft); color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent); font-weight: 600; }
+.tag.tier.t2 { background: var(--warn-soft); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+.tag.tier.t3 { background: color-mix(in srgb, #eab308 15%, var(--surface)); color: #ca8a04; border: 1px solid color-mix(in srgb, #eab308 30%, transparent); }
+.tag.tier.t4 { background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); }
+.tag.tier.t5 { background: var(--ok-soft); color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 25%, transparent); }
+.tag.chunk { background: color-mix(in srgb, var(--accent) 15%, var(--surface)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+.tag.breath { background: color-mix(in srgb, #8b5cf6 15%, var(--surface)); color: #7c3aed; border: 1px solid color-mix(in srgb, #8b5cf6 30%, transparent); }
+
+/* 积分用量与临期展示 */
+.cost-cell { min-width: 135px; font-size: 11.5px; }
+.cost-line { display: flex; align-items: baseline; gap: 4px; font-family: var(--mono); }
+.cost-line.today { color: var(--ink); font-weight: 600; }
+.cost-line.today b { color: var(--accent); }
+.cost-line.total { color: var(--ink-3); font-size: 11px; margin-top: 1px; }
+.urgent-box { margin-top: 3px; font-size: 10.5px; line-height: 1.25; }
+.urgent-box.crit { color: var(--bad); font-weight: 600; }
+.urgent-box.warn { color: var(--warn); font-weight: 550; }
+.urgent-box.safe { color: var(--ink-3); }
+
+/* 顶部强制路由横幅与高亮行 */
+.pinned-banner {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px;
+  background: color-mix(in srgb, #f59e0b 14%, var(--surface));
+  color: #d97706; border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
+  border-radius: 999px; font-size: 11.5px; font-weight: 600;
+}
+tr.is-pinned { background: color-mix(in srgb, #f59e0b 5%, transparent); }
+tr.is-pinned td.mark i { background: #f59e0b !important; }
+
+.stats-acc { grid-template-columns: repeat(7, 1fr); }
+@media (max-width: 1200px) { .stats-acc { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 768px) { .stats-acc { grid-template-columns: repeat(2, 1fr); } }
+
+.acts { display: flex; gap: 5px; justify-content: flex-end; white-space: nowrap; }
+.acts button { padding: 3.5px 8px; font-size: 12.5px; white-space: nowrap; flex: none; }
+
+.empty { padding: 40px 20px; text-align: center; color: var(--ink-3); }
+.empty .big { font-size: 14px; color: var(--ink-2); margin-bottom: 6px; }
+
+/* ── 日志（终端质感）────────────────────────────────────────────── */
+#logBox {
+  max-height: 420px; overflow: auto; margin: 0; padding: 15px 17px;
+  font: 12px/1.75 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--ink-2);
+}
+#logBox .ln { display: block; }
+#logBox .ln.e { color: var(--bad); }
+#logBox .ln.w { color: var(--warn); }
+
+/* ── 配置表单 ─────────────────────────────────────────────────────── */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 16px; }
+@media (max-width: 860px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+fieldset { border: none; margin-bottom: 6px; }
+legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom: 10px; }
+.hr { height: 1px; background: var(--line-soft); margin: 4px 0 16px; }
+.switch { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; }
+.switch .lb { font-size: 13.5px; }
+.savebar {
+  display: flex; align-items: center; gap: 12px; padding: 13px 17px;
+  border-top: 1px solid var(--line-soft); background: var(--surface-2);
+  position: sticky; bottom: 0;
+}
+.savebar .grow { flex: 1; }
+.restart-note { color: var(--warn); font-size: 12.5px; }
+
+/* ── 弹层 ─────────────────────────────────────────────────────────── */
+.veil { position: fixed; inset: 0; background: rgba(6,8,13,.62); backdrop-filter: blur(2px); display: none; z-index: 60; }
+.veil.on { display: flex; align-items: center; justify-content: center; padding: 20px; }
+.dlg {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 13px;
+  width: 560px; max-width: 100%; max-height: 86vh; display: flex; flex-direction: column;
+  box-shadow: 0 24px 64px -24px rgba(0,0,0,.6);
+}
+.dlg header { padding: 17px 20px 13px; border-bottom: 1px solid var(--line-soft); }
+.dlg header h3 { font-size: 15px; font-weight: 620; }
+.dlg header .hint { color: var(--ink-3); font-size: 12.5px; margin-top: 5px; }
+.dlg .body { padding: 18px 20px; overflow: auto; }
+.dlg footer { padding: 13px 20px; border-top: 1px solid var(--line-soft); display: flex; gap: 10px; }
+.dlg footer .grow { flex: 1; }
+.dlg .tabs { display: inline-flex; gap: 2px; background: var(--surface-2); border-radius: 9px; padding: 3px; margin-left: 10px; vertical-align: middle; }
+.dlg .tabs .tab { padding: 4px 14px; border-radius: 7px; border: none; background: transparent; color: var(--ink-3); font: 550 12.5px var(--sans); cursor: pointer; }
+.dlg .tabs .tab.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.tab-panel + .tab-panel { border-top: 1px solid var(--line-soft); margin: 0 -20px; padding: 14px 20px 0; }
+.url {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 11px 13px; font: 12px var(--mono); word-break: break-all; color: var(--accent);
+  margin: 8px 0 12px; user-select: all;
+}
+.state { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
+.state.ok { color: var(--ok); } .state.err { color: var(--bad); }
+.dots::after { content: "…"; animation: blink 1.2s steps(4) infinite; }
+@keyframes blink { 0% { opacity: 1; } 50% { opacity: .3; } 100% { opacity: 1; } }
+
+/* ── 券码弹窗（票券式卡片，类名全部 vc- 前缀防越界）────────────────── */
+.vc-acct { display: flex; align-items: baseline; gap: 7px; margin: 18px 2px 8px;
+  font-size: 12px; color: var(--ink-3); }
+.vc-acct:first-child { margin-top: 4px; }
+.vc-acct .nm { font-weight: 650; font-size: 13px; color: var(--ink-2); }
+.vc { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; margin: 0 0 10px;
+  background: var(--surface); transition: border-color .15s; }
+.vc:hover { border-color: var(--accent); }
+.vc .hd { display: flex; align-items: center; gap: 8px; padding: 12px 14px 4px; }
+.vc .hd .nm { font-weight: 640; font-size: 14px; }
+.vc .hd .tag { margin-left: auto; }
+.vc .meta { padding: 2px 14px 10px; font-size: 11.5px; color: var(--ink-3); }
+.vc .sep { border-top: 1px dashed var(--line); margin: 0 12px; }
+.vc .ft { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+.vc .ft .lab { font-size: 11.5px; color: var(--ink-3); flex: none; }
+.vc .ft code { font: 600 15px/1 var(--mono); letter-spacing: 1.2px; user-select: all;
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+  border-radius: 7px; padding: 7px 12px; }
+.vc .ft .acts { margin-left: auto; display: flex; gap: 8px; flex: none; }
+.vc .vc-qr { border-top: 1px dashed var(--line); padding: 14px; display: flex; justify-content: center; }
+.vc .vc-qr svg { border-radius: 6px; }
+/* 过期态：只淡标题与元信息（保持券码可读），边框改虚线示意作废 */
+.vc.expired { border-style: dashed; }
+.vc.expired .hd, .vc.expired .meta { opacity: .55; }
+
+/* ── Toast ───────────────────────────────────────────────────────── */
+#toasts { position: fixed; right: 20px; bottom: 20px; z-index: 90; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.tst {
+  background: var(--raise); border: 1px solid var(--line); border-left: 3px solid var(--ink-3);
+  border-radius: 8px; padding: 10px 15px; font-size: 13px; box-shadow: var(--shadow); max-width: 380px;
+}
+.tst.ok { border-left-color: var(--ok); } .tst.err { border-left-color: var(--bad); }
+
+@media (max-width: 760px) {
+  .shell { grid-template-columns: 1fr; }
+  .nav { position: static; height: auto; flex-direction: row; align-items: center; overflow-x: auto; }
+  .nav ul { display: flex; padding: 8px; } .nav .sig { border: none; }
+  .nav-sys { border-top: none; border-left: 1px solid var(--line-soft); padding: 4px 8px; display: flex; }
+  .stat { border-right: none; border-bottom: 1px solid var(--line-soft); }
+}
+  /* ── 用量视图 ───────────────────────────────────────────────── */
+  .uschart { border: 1px solid var(--line-soft); border-radius: 8px; overflow: hidden; }
+  .uschart-hd { display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+    border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+  .uschart-hd .lb { color: var(--ink-2); font-weight: 550; }
+  .uschart-hd .legend { color: var(--ink-3); font-size: 11.5px; display: flex; align-items: center; gap: 5px; }
+  .uschart-hd .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-left: 8px; }
+  .uschart-hd .sw-p { background: var(--accent); }
+  .uschart-hd .sw-c { background: var(--ok); }
+  .uschart-hd .sw-cr { background: #f59e0b; }
+  .chart-tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; padding: 2px; background: var(--surface-2); gap: 2px; margin-left: 4px; }
+  .chart-tab { background: transparent; border: none; font-size: 11.5px; padding: 2.5px 9px; border-radius: 4px; cursor: pointer; color: var(--ink-2); font-weight: 500; font-family: inherit; }
+  .chart-tab:hover { color: var(--ink); }
+  .chart-tab.on { background: var(--surface); color: var(--accent); box-shadow: 0 1px 2px rgba(0,0,0,0.06); font-weight: 600; }
+  .uschart-body { padding: 10px 12px 6px; }
+  .uschart-body svg { display: block; width: 100%; height: auto; }
+  .uschart-body .ax { stroke: var(--line-soft); stroke-width: 1; }
+  .uschart-body .gl { stroke: var(--line-soft); stroke-width: 1; stroke-dasharray: 2 3; opacity: .7; }
+  .uschart-body .tk { fill: var(--ink-3); font: 10px var(--mono); }
+  .uschart-body .us-empty { padding: 28px 0; text-align: center; color: var(--ink-3); font-size: 12.5px; }
+  .uschart-body .bar-col { cursor: pointer; transition: opacity .15s; }
+  .uschart-body .bar-col:hover { opacity: .75; }
+  /* 用量表内的 prompt/completion 小条。必须限定在 .us-wrapbar 内：账号池积分条
+     也叫 .bar（块级容器 + 百分比内条），同优先级下这里的全局 .bar 会覆盖它，
+     把积分条塌成 min-width 的一个小点（v1.9.0 回归）。 */
+  .us-wrapbar .bar { display: inline-block; height: 6px; border-radius: 3px; min-width: 2px; vertical-align: middle; }
+  .us-wrapbar .bar-p { background: var(--accent); }
+  .us-wrapbar .bar-c { background: var(--ok); }
+  .us-wrapbar { display: flex; gap: 2px; align-items: center; min-width: 90px; }
+
+  /* ── 积分构成 ───────────────────────────────────────────────── */
+  .pk-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  .pk-card { flex: 1 1 220px; min-width: 200px; border: 1px solid var(--line-soft);
+    border-radius: 8px; padding: 11px 13px; }
+  .pk-card .who { display: flex; align-items: baseline; gap: 7px; margin-bottom: 7px; }
+  .pk-card .nm { font-weight: 600; font-size: 13px; }
+  .pk-card .realm { font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+  .pk-card .big { font: 600 24px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+  .pk-card .sub { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+  .pk-card .mixbar { display: flex; height: 7px; border-radius: 4px; overflow: hidden;
+    margin-top: 8px; background: var(--surface-2); }
+  .pk-card .mixbar i { display: block; height: 100%; }
+  .pk-card .err { color: var(--warn); font-size: 12px; }
+  .pk-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 7px;
+    font-size: 11px; color: var(--ink-3); }
+  .pk-legend span { display: flex; align-items: center; gap: 5px; }
+  .pk-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .pk-expiry-chart { max-height: 260px; overflow-y: auto; overflow-x: hidden;
+    scrollbar-gutter: stable; scrollbar-width: thin; padding-right: 10px;
+    overscroll-behavior: contain; }
+  .pk-expiry-row { display: grid; grid-template-columns: 64px minmax(80px, 1fr) 72px;
+    align-items: center; gap: 9px; min-height: 30px; padding-right: 2px; }
+  .pk-expiry-row > span { color: var(--ink-3); font-size: 11.5px; }
+  .pk-expiry-row > b { text-align: right; font: 600 11.5px var(--mono);
+    font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .pk-expiry-track { display: flex; align-items: stretch; gap: 2px; height: 9px;
+    border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+  .pk-expiry-seg { display: block; min-width: 3px; height: 100%; cursor: default;
+    background: var(--seg-color, var(--accent)); transition: filter .15s, transform .15s; }
+  .pk-expiry-seg:hover { filter: brightness(1.12); transform: scaleY(1.35); }
+  .pk-expiry-legend { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 8px;
+    color: var(--ink-3); font-size: 11px; }
+  .pk-expiry-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .pk-expiry-legend i { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 9px; }
+  .pk-expiry-foot { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+    color: var(--ink-3); font-size: 11px; }
+  .pk-expiry-empty { padding: 22px 0; text-align: center; color: var(--ink-3); font-size: 12px; }
+  .pk-card .expirybar { display: flex; height: 5px; border-radius: 3px; overflow: hidden;
+    margin-top: 6px; background: var(--surface-2); }
+  .pk-card .expirybar i { display: block; height: 100%; min-width: 2px; }
+
+  /* ── 账号卡片视图 ───────────────────────────────────────────── */
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: var(--ink-2); padding: 5px 11px; font-size: 12px; cursor: pointer; }
+  .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .acc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; padding: 16px; }
+  .acc-cards[hidden] { display: none; }
+  .acard { position: relative; display: flex; flex-direction: column; gap: 9px; padding: 14px 15px 12px;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; transition: border-color .15s, box-shadow .15s; }
+  .acard:hover { box-shadow: var(--shadow); }
+  .acard.pinned { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }
+  .acard.cool { border-color: var(--warn); }
+  .acard.off { opacity: .6; }
+  .acard .top { display: flex; align-items: center; gap: 10px; }
+  .acard .ava { width: 38px; height: 38px; flex: none; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-weight: 650; font-size: 15px; background: var(--accent-soft); color: var(--accent); }
+  .acard.cool .ava { background: var(--warn-soft); color: var(--warn); }
+  .acard .who { min-width: 0; flex: 1; }
+  .acard .who .nm { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .acard .who .id { font: 11px/1.4 var(--mono); color: var(--ink-3); }
+  .acard .badges { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 48%; }
+  .acard .asset { display: flex; align-items: baseline; gap: 8px; }
+  .acard .asset .n { font: 650 25px/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .acard .asset .u { color: var(--ink-3); font-size: 11.5px; }
+  .acard .meta-line { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--ink-3); font-size: 11.5px; }
+  .acard .urgent { display: flex; align-items: center; min-height: 26px; border-radius: 7px; padding: 4px 9px; font-size: 11.5px; background: var(--bad-soft); color: var(--bad); }
+  .acard .urgent.warn { background: var(--warn-soft); color: var(--warn); }
+  .acard .urgent.none { background: var(--surface); color: var(--ink-3); }
+  .acard .urgent.near { background: var(--warn-soft); color: var(--warn); }
+  .acard .act { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-3); min-height: 20px; }
+  .acard .act b { color: var(--ink); font-family: var(--mono); }
+  .acard .ck { margin-left: auto; padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+  .acard .ck.ok { background: var(--ok-soft); color: var(--ok); }
+  .acard .ck.bad { background: var(--bad-soft); color: var(--bad); }
+  .acard .ck.none { background: var(--surface-2); color: var(--ink-3); border: 1px solid var(--line); }
+  .acard .sec-title { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-3); }
+  .acard .sec-title .grow { flex: 1; }
+  .acard .link { border: 0; background: transparent; color: var(--accent); font-size: 11.5px; cursor: pointer; padding: 0; }
+  .acard .pk { display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; font-size: 12px; }
+  .acard .pk .amt { font-family: var(--mono); font-weight: 600; }
+  .acard .pk .exp { color: var(--ink-3); font-size: 11px; }
+  .acard .pk .bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; margin-bottom: 3px; }
+  .acard .pk .bar i { display: block; height: 100%; }
+  .acard .bar.crit i { background: var(--bad); } .acard .bar.warn i { background: var(--warn); } .acard .bar.safe i { background: var(--ok); }
+  .acard .pk-empty { color: var(--ink-3); font-size: 11.5px; opacity: .5; }
+  .acard .foot { display: grid; grid-template-columns: 1fr; gap: 3px; font-size: 11.5px; color: var(--ink-3);
+    border-top: 1px solid var(--line-soft); padding-top: 8px; }
+  .acard .foot > span { display: flex; justify-content: space-between; }
+  .acard .foot b { color: var(--ink); font-family: var(--mono); }
+  .acard .acts { display: flex; flex-wrap: wrap; gap: 5px; }
+
+  /* 精简模式：仅保留身份 / 积分 / 临期 / 操作 */
+  .acc-cards.compact { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .acc-cards.compact .acard .meta-line,
+  .acc-cards.compact .acard .act,
+  .acc-cards.compact .acard .sec-title,
+  .acc-cards.compact .acard .pk,
+  .acc-cards.compact .acard .foot { display: none; }
+  .acc-cards.compact .acard { gap: 7px; padding: 12px 13px 10px; }
+  .acc-cards.compact .acard .asset .n { font-size: 22px; }
+  .acc-cards.compact .acard .ava { width: 32px; height: 32px; font-size: 13px; }
+  .acc-cards.compact .acard .acts { border-top: 1px solid var(--line-soft); padding-top: 7px; }
+
+  /* 积分构成：账号明细默认折叠 */
+  details.pk-fold > summary { cursor: pointer; list-style: none; padding: 12px 17px; font-size: 13px;
+    display: flex; align-items: center; gap: 8px; }
+  details.pk-fold > summary::-webkit-details-marker { display: none; }
+  details.pk-fold > summary .note { color: var(--ink-3); font-size: 12px; }
+  details.pk-fold > summary::after { content: '展开 ▾'; margin-left: auto; color: var(--accent); font-size: 12px; flex: none; }
+  details.pk-fold[open] > summary::after { content: '收起 ▴'; }
+  details.pk-fold[open] > summary { border-bottom: 1px solid var(--line-soft); }
+
+  /* 运行日志：每条消息分隔线 */
+  #logBox .ln { padding: 5px 0; border-bottom: 1px solid var(--line-soft); }
+  #logBox .ln:last-child { border-bottom: none; }
+
+  /* 用量 KPI：分组卡片 + 键值行（比平铺数字块好定位） */
+  .us-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; padding: 14px 17px; }
+  .us-kpi-group { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; background: var(--surface-2); }
+  .us-kpi-group h4 { margin: 0; padding: 8px 13px; font-size: 11.5px; font-weight: 600; color: var(--ink-2);
+    letter-spacing: .02em; background: var(--surface); border-bottom: 1px solid var(--line-soft); }
+  .us-kpi-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+    padding: 6px 13px; border-top: 1px solid var(--line-soft); font-size: 12.5px; }
+  .us-kpi-group h4 + .us-kpi-row { border-top: none; }
+  .us-kpi-row .k { color: var(--ink-3); }
+  .us-kpi-row .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .us-kpi-row .v.primary { color: var(--accent); }
+  .us-kpi-row .v.good { color: var(--ok); }
+  .us-kpi-row .v.warn { color: var(--warn); }
+
+  /* 调度卷轴（滚动时间轴） */
+  .us-timeline { max-height: 320px; overflow-y: auto; padding: 4px 2px; }
+  .tl-row { display: grid; grid-template-columns: 66px 10px 1fr; gap: 8px; align-items: baseline;
+    padding: 5px 0; font-size: 12px; border-bottom: 1px solid var(--line-soft); }
+  .tl-row:last-child { border-bottom: none; }
+  .tl-row .tl-t { color: var(--ink-3); font-family: var(--mono); font-size: 11px; }
+  .tl-row .tl-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); align-self: center; }
+  .tl-row.e .tl-dot { background: var(--bad); }
+  .tl-row.w .tl-dot { background: var(--warn); }
+  .tl-row .tl-x { color: var(--ink-2); word-break: break-word; }
+
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="nav">
+    <div class="brand">
+      <div class="name">WorkBuddy2API</div>
+      <div class="sub" id="navSub">控制台</div>
+    </div>
+    <ul>
+      <li><a href="#accounts" data-view="accounts" class="on">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.5" r="2.6"/><path d="M2.8 13.5c.6-2.6 2.7-4 5.2-4s4.6 1.4 5.2 4"/></svg>
+        账号池</a></li>
+      <li><a href="#usage" data-view="usage">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13.5h12"/><path d="M4.5 13.5V8.2M8 13.5V3.5M11.5 13.5v-3"/></svg>
+        用量</a></li>
+      <li><a href="#packages" data-view="packages">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.2 5.4 8 2.5l5.8 2.9v5.2L8 13.5l-5.8-2.9z"/><path d="M2.2 5.4 8 8.3l5.8-2.9M8 8.3v5.2"/></svg>
+        积分构成</a></li>
+      <li><a href="#taskscenter" data-view="taskscenter">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h10v9H8l-3 3v-3H3z"/><path d="M6 6.5h4M6 9h2.5"/></svg>
+        任务中心</a></li>
+      <li><a href="#models" data-view="models">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8 14 5v6L8 14.2 2 11V5z"/><path d="M2 5l6 3.2L14 5M8 8.2v6"/></svg>
+        模型与档位</a></li>
+      <li><a href="#config" data-view="config">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg>
+        配置</a></li>
+      <li><a href="#locks" data-view="locks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        <span>模型锁池</span></a></li>
+              <li><a href="#reqlog" data-view="reqlog">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19h16M7 16V9m5 7V5m5 11v-4"/></svg>
+                <span>请求指标</span></a></li>
+      <li><a href="#logs" data-view="logs">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>
+        运行日志</a></li>
+    </ul>
+    <div class="nav-sys">
+      <button class="nav-btn" id="btnRestart" title="重启网关服务">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 8a5.5 5.5 0 0 1 9.3-3.9l1.7-1.6V7H9"/><path d="M13.5 8a5.5 5.5 0 0 1-9.3 3.9l-1.7 1.6V9H7"/></svg>
+        <span>重启</span>
+      </button>
+      <button class="nav-btn danger" id="btnShutdown" title="关闭网关服务">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v4.5M4.8 4.5a5 5 0 1 0 6.4 0"/></svg>
+        <span>关闭</span>
+      </button>
+    </div>
+    <div class="sig">
+      <div class="row"><span class="pulse" id="navPulse"></span><span id="navState">连接中</span></div>
+      <div class="row" style="margin-top:5px"><span id="navVer">v-</span> · <span id="navRedis">-</span></div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <h2 id="ttl">账号池</h2>
+      <span class="sep">/</span>
+      <span class="meta" id="subMeta">-</span>
+      <div class="grow"></div>
+      <button class="icon ghost" id="btnTheme" title="切换明暗（跟随系统 → 浅色 → 深色）" aria-label="切换主题">
+        <svg id="icoTheme" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z"/></svg>
+      </button>
+      <button id="btnRefresh">刷新</button>
+      <button class="primary" id="btnAdd">添加账号</button>
+    </div>
+
+    <!-- 账号池 -->
+    <section class="view" id="view-accounts">
+      <div class="stats stats-acc">
+        <div class="stat"><div class="v" id="sTotal">-</div><div class="k">账号总数</div></div>
+        <div class="stat good"><div class="v" id="sHealthy">-</div><div class="k">健康可用</div></div>
+        <div class="stat"><div class="v" id="sCredits">-</div><div class="k">积分存量 (剩余/总额)</div></div>
+        <div class="stat"><div class="v" id="sDailyCost">-</div><div class="k">今日全池消耗</div></div>
+        <div class="stat"><div class="v" id="sTotalCost">-</div><div class="k">累计全池消耗</div></div>
+        <div class="stat" id="statUrgent"><div class="v" id="sUrgent">-</div><div class="k">48h临期清仓</div></div>
+        <div class="stat" id="statRouteMode"><div class="v" id="sRouteMode">-</div><div class="k">当前路由模式</div></div>
+      </div>
+
+      <div class="box">
+        <header>
+          <h3>账号池</h3>
+          <span class="grow"></span>
+          <span class="seg" id="accDensityToggle"><button data-v="full" class="on">完整</button><button data-v="compact">精简</button></span>
+          <span class="note" id="accNote"></span>
+          <span id="pinnedBanner" class="pinned-banner" style="display:none"></span>
+          <button class="xs warn" id="btnUnpinAll" style="display:none">取消全部强制</button>
+          <button class="xs" id="btnCheckinAll">全部签到</button>
+          <button class="xs" id="btnTravelAll">旅行巡检</button>
+          <button class="xs" id="btnActivityAll">活跃上报</button>
+          <button class="xs" id="btnKeepaliveAll">全部保活</button>
+        </header>
+        <div class="acc-cards" id="accCards"></div>
+      </div>
+    </section>
+
+    <!-- 任务中心 -->
+    <section class="view" id="view-taskscenter" hidden>
+      <div class="box">
+        <header>
+          <h3>成长任务队列 <span class="hint" id="qcSummary"></span></h3>
+          <span class="grow"></span>
+          <button class="xs" id="btnSchoolVouchers" title="开学季抽奖抽中的第三方券码（活动已结束，历史券码仍可查）">查询券码</button>
+          <label class="sel-note">并发
+            <select id="qcConc"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option></select>
+          </label>
+          <button class="xs" id="btnScanAll">扫描待办</button>
+          <button class="xs primary" id="btnRunQueue">执行全部待办</button>
+        </header>
+        <div class="qprog" id="qProg" hidden>
+          <div class="qbar"><i id="qBarFill"></i></div>
+          <span class="note" id="qProgText"></span>
+        </div>
+        <div class="tc-empty" id="tcEmpty">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="8" y="6" width="24" height="36" rx="3"/>
+            <path d="M14 16h12M14 24h12M14 32h7" opacity=".45"/>
+            <circle cx="35" cy="33" r="8"/><path d="m40 38 5 5"/>
+          </svg>
+          <div class="t">还没有扫描过</div>
+          <div class="d">扫描所有账号的成长任务与开学季待办，把没做的排成一列，一键执行。</div>
+        </div>
+        <div id="qcList"></div>
+      </div>
+    </section>
+
+    <!-- 模型与档位 -->
+    <section class="view" id="view-models" hidden>
+      <div class="box">
+        <header>
+          <h3>模型能力 <span class="hint">max_tokens bug已修复目前可以正常透传最大输出,但是官方返回的最大输出仅为参考，不保证完全正确
+          </span></h3>
+          <span class="grow"></span>
+          <span class="note" id="mdNote">实时查询上游</span>
+          <button class="xs" id="btnModels">重新获取</button>
+        </header>
+        <div class="tbl-wrap">
+        <table class="acc md">
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
+          <tbody id="mdBody"></tbody>
+        </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 积分构成 -->
+    <section class="view" id="view-packages" hidden>
+      <div class="box">
+        <header>
+          <h3>积分到期分布</h3>
+          <span class="grow"></span>
+          <span class="note">剩余天数 · 积分</span>
+        </header>
+        <div class="pad"><div id="pkExpiry"></div></div>
+      </div>
+
+      <div class="box">
+        <header>
+          <h3>账号对比</h3>
+          <span class="grow"></span>
+          <span class="note" id="pkNote">—</span>
+          <button class="xs" id="btnPk">刷新</button>
+        </header>
+        <div class="pad"><div class="pk-grid" id="pkSummary"></div></div>
+      </div>
+      <div id="pkDetail"></div>
+    </section>
+
+    <!-- 用量 -->
+    <section class="view" id="view-usage" hidden>
+      <div class="box">
+        <header>
+          <h3>用量总览</h3>
+          <span class="grow"></span>
+          <span class="note" id="usNote">—</span>
+          <select id="usWindow" class="xs">
+            <option value="24">近 24 小时</option>
+            <option value="72" selected>近 3 天</option>
+            <option value="168">近 7 天</option>
+            <option value="720">近 30 天</option>
+            <option value="0">全部历史</option>
+          </select>
+          <button class="xs" id="btnUsage">刷新</button>
+        </header>
+        <div class="us-kpis" id="usStats"></div>
+        <div class="pad">
+          <div class="uschart">
+            <div class="uschart-hd">
+              <span class="lb" id="usChartTitle">用量时序</span>
+              <div class="chart-tabs">
+                <button type="button" class="chart-tab on" id="btnModeTokens">Token</button>
+                <button type="button" class="chart-tab" id="btnModeCredits">积分</button>
+              </div>
+              <span class="grow"></span>
+              <span class="legend" id="usChartLegend"><i class="sw sw-p"></i>prompt<i class="sw sw-c"></i>completion</span>
+            </div>
+            <div id="usChart" class="uschart-body"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="box">
+        <header><h3>调度卷轴</h3><span class="grow"></span>
+          <span class="note">来自运行日志 · 签到 / 保活 / 旅行 / 活跃 / 成长 / 夜猫</span>
+          <button class="xs" id="btnSched">刷新</button>
+        </header>
+        <div class="pad"><div id="schedTimeline" class="us-timeline"></div></div>
+      </div>
+
+      <div class="box">
+        <header><h3>按账号</h3><span class="grow"></span>
+          <span class="note">请求数含失败尝试</span></header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th><th>账号</th><th>域</th>
+              <th class="num">请求</th><th class="num">失败</th>
+              <th class="num">积分消耗</th>
+              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">合计</th>
+              <th class="num">均延迟</th><th class="num">均速率</th>
+            </tr></thead>
+            <tbody id="usAccBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="box">
+        <header><h3>按模型</h3></header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th><th>模型</th>
+              <th class="num">请求</th><th class="num">失败</th>
+              <th class="num">积分消耗</th>
+              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">合计</th>
+            </tr></thead>
+            <tbody id="usModelBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="box">
+        <header><h3>按域</h3></header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th><th>realm</th>
+              <th class="num">请求</th><th class="num">失败</th>
+              <th class="num">积分消耗</th>
+              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">合计</th>
+            </tr></thead>
+            <tbody id="usRealmBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 配置 -->
+    <section class="view" id="view-config" hidden>
+      <form id="cfgForm">
+        <div class="box">
+          <header><h3>服务</h3><span class="grow"></span><span class="note" id="cfgPath"></span></header>
+          <div class="pad">
+            <div class="grid2">
+              <label class="fld"><span class="lb">监听地址</span>
+                <input name="listen" placeholder=":7863">
+                <span class="hint">改动需重启进程</span></label>
+              <label class="fld"><span class="lb">API 密钥</span>
+                <div class="inline"><input name="api_key" id="cfgKey" type="password" placeholder="留空 = 不鉴权">
+                <button type="button" class="xs" id="btnEye">显示</button></div>
+                <span class="hint">立即生效（含面板自身）</span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="box">
+          <header><h3>定时任务</h3></header>
+          <div class="pad">
+            <div class="grid2">
+              <div>
+                <div class="switch"><span class="lb">自动签到</span>
+                  <input type="checkbox" name="checkin_enabled"></div>
+                <label class="fld"><span class="lb">签到时点（小时，逗号分隔）</span>
+                  <input name="checkin_hours" placeholder="9, 21"></label>
+              </div>
+              <div>
+                <div class="switch"><span class="lb">Token 保活</span>
+                  <input type="checkbox" name="keepalive_enabled"></div>
+                <label class="fld"><span class="lb">保活时点（小时，逗号分隔）</span>
+                  <input name="keepalive_hours" placeholder="22"></label>
+              </div>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <div>
+                <div class="switch"><span class="lb">猫猫旅行</span>
+                  <input type="checkbox" name="travel_enabled"></div>
+                <label class="fld"><span class="lb">旅行时点（小时，逗号分隔）</span>
+                  <input name="travel_hours" placeholder="9, 21">
+                  <span class="hint">一趟派出 + 一趟领奖闭环</span></label>
+              </div>
+              <div>
+                <div class="switch"><span class="lb">活跃上报</span>
+                  <input type="checkbox" name="activity_enabled"></div>
+                <label class="fld"><span class="lb">上报时点（小时，逗号分隔）</span>
+                  <input name="activity_hours" placeholder="10">
+                  <span class="hint">点亮连登 + 解锁领养前置</span></label>
+              </div>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <div class="switch"><span class="lb">后台刷新余额</span>
+                <input type="checkbox" name="balance_refresh_enabled"></div>
+              <div class="switch"><span class="lb">保号任务覆盖已禁用账号</span>
+                <input type="checkbox" name="include_disabled_in_tasks">
+                <span class="hint">默认关闭。打开后：签到 / 活跃上报 / token 保活 / 余额刷新对<b>禁用号</b>也执行；
+                  旅行、夜猫子、连登、成长任务与 global 每日对话<b>不受影响</b>。禁用号不会因此被解冻，也不参与选号。</span></div>
+              <label class="fld"><span class="lb">刷新间隔（分钟）</span>
+                <input name="balance_refresh_minutes" type="number" min="1" placeholder="5"></label>
+            </div>
+            <div class="grid2">
+              <div class="switch"><span class="lb" title="启动后一次 + 每小时一次逐账号拉资产画像（只读端点）。测试/离线环境要「零上游消耗」时关掉">同步资产画像</span>
+                <input type="checkbox" name="resource_sync_enabled"></div>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <div class="switch"><span class="lb">成长任务自动执行</span>
+                <input type="checkbox" name="growth_enabled" checked></div>
+              <label class="fld"><span class="lb">执行时点（小时，逗号分隔）</span>
+                <input name="growth_hours" placeholder="1">
+                <span class="hint">每日到点自动「扫描 + 执行全部待办」（Sequential 任务链零点解锁后自动推进，建议零点后）</span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="box">
+          <header><h3>账号池与流量治理</h3></header>
+          <div class="pad">
+            <div class="grid3">
+              <label class="fld"><span class="lb">单账号最大在途</span>
+                <input name="max_in_flight" type="number" min="0" placeholder="3">
+                <div class="fld"><label class="lb">入站读取超时 server.read_timeout</label>
+                  <input name="read_timeout" placeholder="300s">
+                  <div class="hint">Go 时长（30m / 300s / 1h30m）；<b>0 = 不限制</b>。防大上下文/文件块上传经反代链被掐成 400 read body timeout。<b>改动需重启进程</b>。</div></div>
+                <span class="hint">0 = 不限制</span></label>
+              <label class="fld"><span class="lb">国际版在途上限</span>
+                <input name="max_in_flight_global" type="number" min="1" placeholder="2">
+                <span class="hint">global 域风控更紧，默认 2</span></label>
+              <label class="fld"><span class="lb">连续失败熔断阈值</span>
+                <input name="breaker_threshold" type="number" min="1" placeholder="3"></label>
+            </div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">软限流冷却基数</span>
+                <input name="soft_rate" placeholder="600s"></label>
+              <label class="fld"><span class="lb">软冷却退避上限</span>
+                <input name="soft_rate_max" placeholder="2h"></label>
+              <label class="fld"><span class="lb">熔断基础时长</span>
+                <input name="breaker_cooldown" placeholder="30m"></label>
+            </div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">熔断退避上限</span>
+                <input name="breaker_cooldown_max" placeholder="6h"></label>
+              <label class="fld"><span class="lb">连败降权阈值</span>
+                <input name="degrade_threshold" type="number" min="1" placeholder="5">
+                <span class="hint">未知错误连败 N 次临时出池</span></label>
+              <label class="fld"><span class="lb">连败降权时长</span>
+                <input name="degrade_cooldown" placeholder="10m"></label>
+            </div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">连败降权上限</span>
+                <input name="degrade_cooldown_max" placeholder="2h"></label>
+              <label class="fld"><span class="lb">闲置补偿 / 小时</span>
+                <input name="idle_weight_per_hour" type="number" step="0.1" placeholder="0.5"></label>
+              <label class="fld"><span class="lb">闲置补偿上限</span>
+                <input name="idle_weight_max" type="number" step="0.1" placeholder="5"></label>
+            </div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">成本探索窗口</span>
+                <input name="cost_explore_interval" placeholder="30m">
+                <span class="hint">垄断破除：免费层垄断时定期搭车探索未知号；0 关停</span></label>
+              <label class="fld"><span class="lb">会话粘性 TTL</span>
+                <input name="ttl" placeholder="30m">
+                <span class="hint">改动需重启进程</span></label>
+              <label class="fld"><span class="lb">积分保底</span>
+                <input name="credit_floor" type="number" min="0" step="10" placeholder="0">
+                <span class="hint">低于该积分不接「实测收费」模型；0 = 关闭（宁 503 不打穿）</span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="box">
+          <header><h3>智能调度与透气轮转 (Phase 3 & Paced Rotation)</h3></header>
+          <div class="pad">
+            <div class="grid3">
+              <label class="fld"><span class="lb">基础分块额度</span>
+                <input name="chunk_quota_credits" type="number" step="0.5" min="0" placeholder="25.0">
+                <span class="hint">&lt;=0 禁用分块；常规模型连续单号消耗上限</span></label>
+              <label class="fld"><span class="lb">紧急清仓层 (Tier 1)</span>
+                <input name="critical_expire_hours" type="number" step="1" min="1" placeholder="48.0">
+                <span class="hint">&lt;=N 小时到期，100% 绝对抢救不透气</span></label>
+              <label class="fld"><span class="lb">临期缓冲层 (Tier 2)</span>
+                <input name="urgent_expire_hours" type="number" step="1" min="1" placeholder="72.0">
+                <span class="hint">&lt;=N 小时到期，受柔性透气保护</span></label>
+            </div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">近期临期天数 (Tier 3)</span>
+                <input name="near_expire_days" type="number" step="0.5" min="1" placeholder="7.0">
+                <span class="hint">过渡近期层（默认 7 天）</span></label>
+              <label class="fld"><span class="lb">底仓层保护天数 (Tier 4)</span>
+                <input name="safe_reserve_days" type="number" step="0.5" min="1" placeholder="10.0">
+                <span class="hint">安全底仓层过渡天数（默认 10 天）</span></label>
+              <label class="fld"><span class="lb">枯竭断崖阈值</span>
+                <input name="low_credit_cutoff" type="number" step="50" min="0" placeholder="800.0">
+                <span class="hint">底仓层保护线，临期抢救不受此限</span></label>
+            </div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">到期紧迫度权重</span>
+                <input name="expire_urgency_weight" type="number" step="0.5" min="0" placeholder="15.0">
+                <span class="hint">到期紧迫度加权最高分（默认 15.0）</span></label>
+              <label class="fld"><span class="lb">到期非线性指数</span>
+                <input name="expire_power" type="number" step="0.1" min="0.5" placeholder="1.5">
+                <span class="hint">指数越大越倾斜最早到期账号（默认 1.5）</span></label>
+              <div class="fld"><span class="lb">自适应三档分块</span>
+                <input type="checkbox" name="adaptive_chunking">
+                <span class="hint">按模型单价自动切换 25/50/100 额度</span></div>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <div class="fld"><span class="lb">柔性透气轮转 (Paced Rotation)</span>
+                <input type="checkbox" name="paced_breathing_enabled">
+                <span class="hint">启用后避免 Tier 2 临期号持续承载导致上游风控封号</span></div>
+              <label class="fld"><span class="lb">Tier 2 连续分块上限</span>
+                <input name="paced_tier2_consecutive_max" type="number" min="1" max="20" placeholder="3">
+                <span class="hint">连续跑满 N 块后，让渡 1 块给健康号透气散热</span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="box">
+          <header><h3>上游与高级</h3></header>
+          <div class="pad">
+            <div class="grid3">
+              <label class="fld"><span class="lb">短请求超时</span>
+                <input name="timeout_seconds" type="number" min="1" placeholder="120">
+                <span class="hint">需重启</span></label>
+              <label class="fld"><span class="lb">聊天首字节超时</span>
+                <input name="header_timeout_seconds" type="number" min="1" placeholder="120">
+                <span class="hint">需重启</span></label>
+              <label class="fld"><span class="lb">流空闲超时</span>
+                <input name="idle_timeout_seconds" type="number" min="1" placeholder="300">
+                <span class="hint">需重启</span></label>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">出站 User-Agent</span>
+                <input name="user_agent" placeholder="留空 = CLI/2.63.2 CodeBuddy/2.63.2">
+                <span class="hint">影响官网积分记录「使用端」显示；需重启</span></label>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">国际版聊天端点 (global.chat_base)</span>
+                <input name="global_chat_base" placeholder="留空默认 https://www.workbuddy.ai">
+                <span class="hint">热生效，无需重启</span></label>
+              <label class="fld"><span class="lb">国际版计费端点 (global.billing_base)</span>
+                <input name="global_billing_base" placeholder="留空默认 https://www.workbuddy.ai">
+                <span class="hint">热生效，无需重启</span></label>
+            </div>
+            <div class="switch"><span class="lb">启用国际版路由 (global.enabled)</span>
+              <input type="checkbox" name="global_enabled"></div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">系统提示词模式</span>
+                <select name="prompt_mode">
+                  <option value="custom">custom — 网关自有提示词（避免指纹误报）</option>
+                  <option value="append">append — 客户端 system 后插网关提示词（并用）</option>
+                  <option value="passthrough">passthrough — 透传客户端原始 system</option>
+                </select>
+                <span class="hint">需重启</span></label>
+              <label class="fld"><span class="lb">提示词文件路径</span>
+                <input name="prompt_file" placeholder="留空 = 内置默认提示词">
+                <span class="hint">需重启</span></label>
+            </div>
+            <div class="hr"></div>
+            <div class="switch"><span class="lb">出站请求指纹脱敏</span>
+              <input type="checkbox" name="sanitize_blacklist_fingerprints"></div>
+            <div class="switch"><span class="lb">会话粘性路由</span>
+              <input type="checkbox" name="session_sticky_enabled"></div>
+            <div class="switch"><span class="lb">系统托盘图标 (ui.tray)</span>
+              <input type="checkbox" name="ui_tray"></div>
+            <div class="hint" style="margin-top:10px">Upstash Redis 镜像、凭证目录与状态文件路径需手工编辑配置文件（判为重启项）。</div>
+          </div>
+        </div>
+
+        <div class="savebar">
+          <span class="grow"></span>
+          <span class="restart-note" id="cfgNote"></span>
+          <button type="button" id="btnCfgReload">放弃修改</button>
+          <button type="submit" class="primary" id="btnCfgSave">保存配置</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 日志 -->
+    <section class="view" id="view-reqlog" hidden>
+      <div class="card">
+        <div class="card-hd"><h2>请求指标</h2><span class="hint" id="rlMeta"></span></div>
+        <div class="hint">只采集 <code>/v1/*</code> 的<b>结构化指标</b>：IP 截断到 <code>/24</code>、UA 截断 120 字符、uid 仅 8 位，
+          <b>不落</b> prompt/响应正文。默认读内存环（500 条）；填 <code>since</code>（RFC3339）则改读磁盘归档
+          （按事件时间排序，默认保留 7 天 / ≤50MB）。采集默认关闭，见 <code>reqlog</code> 配置段。</div>
+        <div class="row" style="display:flex;gap:8px;align-items:center;margin:8px 0">
+          <label class="lb">since（可选，RFC3339，如 2026-10-09T00:00:00Z）</label>
+          <input id="rlSince" placeholder="留空 = 内存环">
+          <label class="lb">limit</label>
+          <input id="rlLimit" type="number" min="1" max="2000" value="200" style="width:90px">
+          <button id="rlLoad" class="btn">刷新</button>
+        </div>
+        <div id="rlBox" class="tbl-wrap"></div>
+      </div>
+    </section>
+    <section class="view" id="view-locks" hidden>
+      <div class="card">
+        <div class="card-hd"><h2>模型锁池</h2><span class="hint" id="locksMeta"></span></div>
+        <div class="hint">当前处于<b>模型级限流（6004）</b>或<b>模型不存在负缓存（11102，"换模型才有用"）</b>的
+          (域, 模型) 组合：各挡了几个号、最早何时解封。只读视图，不改变选号。</div>
+        <div id="locksBox" class="tbl-wrap"></div>
+      </div>
+    </section>
+    <section class="view" id="view-logs" hidden>
+      <div class="box">
+        <header>
+          <h3>运行日志</h3>
+          <span class="grow"></span>
+          <span class="chips" id="logChips">
+            <button class="xs chip on" data-ch="all">全部</button>
+            <button class="xs chip" data-ch="task">任务</button>
+            <button class="xs chip" data-ch="chat">对话</button>
+            <button class="xs chip" data-ch="sys">系统</button>
+          </span>
+          <span class="note" id="logNote">最近 500 行</span>
+          <button class="xs" id="btnLogPin">自动滚动：开</button>
+        </header>
+        <pre id="logBox"></pre>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- 积分任务 -->
+<div class="veil" id="taskVeil">
+  <div class="dlg" style="width:940px">
+    <header>
+      <h3>积分任务 <span class="hint" id="taskWho"></span></h3>
+      <div class="hint">查询上游任务进度；「接受」为报名（幂等），「领取」在进度达标后可用。所有操作走网关，无需外部脚本。</div>
+    </header>
+    <div class="body">
+      <div class="state" id="taskState"><span class="dots">加载中</span></div>
+      <div class="tbl-wrap">
+        <table class="acc md" id="taskTable" hidden>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>任务</th><th>进度</th><th>奖励</th><th>状态</th><th class="c-acts"></th></tr></thead>
+          <tbody id="taskBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button id="btnTaskAcceptAll">全部接受</button>
+      <button id="btnTaskAutoAll" class="primary">一键完成可自动任务</button>
+      <button id="btnTaskReload">重新查询</button>
+      <button id="btnCloseTask">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 开学季券码 -->
+<div class="veil" id="vcVeil">
+  <div class="dlg">
+    <header>
+      <h3>开学季 · 我的券码</h3>
+      <div class="hint">抽奖抽中的第三方券（KFC / 瑞幸 / 酷狗等），券码到店到对应app/小程序兑换。</div>
+    </header>
+    <div class="body" id="vcBody"></div>
+    <footer>
+      <span class="hint" id="vcNote"></span>
+      <span class="grow"></span>
+      <button class="xs" id="btnVcRefresh">刷新</button>
+      <button class="xs primary" id="btnVcClose">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 添加账号 -->
+<div class="veil" id="addVeil">
+  <div class="dlg">
+    <header>
+      <h3>添加账号</h3>
+      <div class="tabs" id="addTabs">
+        <button class="tab on" data-tab="login">浏览器登录</button>
+        <button class="tab" data-tab="import">导入 JSON</button>
+      </div>
+    </header>
+    <div class="body">
+      <!-- 浏览器登录 -->
+      <div id="addTabLogin" class="tab-panel">
+        <div id="addPick">
+          <div class="realm-row">
+            <span class="hint" style="font-size:12px">版本：</span>
+            <label class="realm-opt"><input type="radio" name="addRealm" value="cn" checked> 国内版（CN）</label>
+            <label class="realm-opt"><input type="radio" name="addRealm" value="global"> 国际版（Global）</label>
+          </div>
+          <div class="hint" style="font-size:12px;margin-top:2px">国际版登录后，网关自动完成注册地区、激活与试用额度领取，全程无需手动操作。</div>
+        </div>
+        <div id="addLoad" class="state" hidden><span class="dots">正在获取授权链接</span></div>
+        <div id="addReady" hidden>
+          <div class="state">在浏览器打开以下链接并登录：</div>
+          <div class="url" id="addUrl"></div>
+          <div class="state" id="addPoll"><span class="dots">等待授权完成，自动检测中</span></div>
+        </div>
+        <div id="addDone" class="state ok" hidden></div>
+        <div id="addErr" class="state err" hidden></div>
+      </div>
+      <!-- 导入 JSON -->
+      <div id="addTabImport" class="tab-panel" hidden>
+        <div class="hint" style="margin-bottom:8px">选择 cockpit tools 导出的 JSON 文件，批量导入账号。文件需为账号数组格式。</div>
+        <input type="file" id="importFile" accept=".json" style="margin-bottom:8px">
+        <div id="importDone" class="state ok" hidden></div>
+        <div id="importErr" class="state err" hidden></div>
+      </div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button id="btnStartLogin" class="primary">获取授权链接</button>
+      <button id="btnCopyUrl" hidden>复制链接</button>
+      <button id="btnOpenUrl" class="primary" hidden>在浏览器打开</button>
+      <button id="btnCloseAdd">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 密钥 -->
+<div class="veil" id="keyVeil" data-lock="1">
+  <div class="dlg" style="width:420px">
+    <header>
+      <h3>需要访问密钥</h3>
+      <div class="hint">该网关已启用 api_key 鉴权，请输入 config.json 中的密钥。</div>
+    </header>
+    <div class="body">
+      <!-- 独立 form 包住密钥框（上游 20bde29）：Chromium 会把裸 password 输入与附近文本框
+           （面板顶部的搜索框）合成同一个"凭证表单"，触发自动填充/密码管理器干扰。
+           display:contents 让 form 不产生布局盒子；回车拦截走 app.js 的 submit 监听
+           （本面板 CSP 为 script-src 'self'，行内 onsubmit 会被浏览器直接拦掉）。 -->
+      <form id="keyForm" style="display:contents"><input type="password" id="keyInput" placeholder="api_key" autocomplete="current-password"></form>
+      <div class="state err" id="keyErr" hidden style="margin-top:10px">密钥不正确，请重试。</div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button class="primary" id="btnKey">进入</button>
+    </footer>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

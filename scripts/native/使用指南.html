@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkBuddy2API 使用指南（超简单版）</title>
+<style>
+  :root {
+    --ink: #1f2733; --ink2: #47536b; --ink3: #6b7787;
+    --line: #dfe4ec; --bg: #f5f7fb; --card: #ffffff;
+    --blue: #2f6df6; --blue-soft: #eaf1ff;
+    --green: #12a06a; --green-soft: #e8f8f1;
+    --amber: #b8860b; --amber-soft: #fff7e2;
+    --red: #d64545; --red-soft: #fdeeee;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 16px 64px;
+    background: var(--bg); color: var(--ink);
+    font: 17px/1.85 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header {
+    margin: 0 -16px 26px; padding: 34px 16px 30px;
+    background: linear-gradient(135deg, #2f6df6, #5b8cff 55%, #7aa2ff);
+    color: #fff; text-align: center;
+  }
+  header h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: .5px; }
+  header p { margin: 0; opacity: .95; font-size: 16px; }
+  h2 { font-size: 22px; margin: 34px 0 12px; padding-left: 12px; border-left: 5px solid var(--blue); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; margin: 0 0 20px; }
+  section h2:first-child { margin-top: 0; }
+  p { margin: 10px 0; }
+  b { color: #10203a; }
+  code {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    background: #f0f3f9; border: 1px solid var(--line); border-radius: 6px;
+    padding: 1px 6px; font-size: 15.5px; color: #123;
+  }
+  .code {
+    position: relative; background: #101826; border-radius: 10px;
+    padding: 16px 74px 16px 18px; margin: 12px 0; overflow-x: auto;
+  }
+  .code code {
+    background: none; border: 0; color: #e8f0ff; padding: 0;
+    font-size: 16px; white-space: pre-wrap; word-break: break-all;
+  }
+  .copy {
+    position: absolute; top: 10px; right: 10px;
+    background: #2c3a52; color: #cfdcf5; border: 1px solid #3d4d6b;
+    border-radius: 7px; padding: 5px 11px; font-size: 13px; cursor: pointer;
+  }
+  .copy:active { background: #1b2536; }
+  ol, ul { padding-left: 24px; margin: 10px 0; }
+  li { margin: 7px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 16px; }
+  th, td { border: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+  th { background: #eef2f9; font-weight: 600; }
+  .tip, .warn, .lock { border-radius: 10px; padding: 12px 16px; margin: 14px 0; }
+  .tip { background: var(--green-soft); border: 1px solid #bfe8d6; }
+  .warn { background: var(--amber-soft); border: 1px solid #f0dcae; }
+  .lock { background: var(--blue-soft); border: 1px solid #c9dcff; }
+  .dim { color: var(--ink3); font-size: 15px; }
+  details { margin: 12px 0; border: 1px dashed var(--line); border-radius: 10px; padding: 10px 14px; background: #fafbfe; }
+  summary { cursor: pointer; font-weight: 600; color: var(--blue); }
+  .step { display: inline-block; background: var(--blue); color: #fff; border-radius: 999px; padding: 3px 13px; font-size: 14px; margin-right: 8px; vertical-align: 2px; }
+  dl { margin: 8px 0; }
+  dt { font-weight: 700; margin-top: 16px; color: #10203a; }
+  dd { margin: 6px 0 0; color: var(--ink2); }
+  footer { margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--ink3); font-size: 14.5px; }
+  a { color: var(--blue); }
+  .big { font-size: 19px; font-weight: 700; }
+  @media print { .copy { display: none; } body { background: #fff; } section { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>WorkBuddy2API 使用指南</h1>
+  <p>照着做就行 · 不用懂编程 · 大约 5 分钟<br><span style="opacity:.92;font-size:15px">（真的，宝宝也能看懂）</span></p>
+</header>
+
+<section>
+  <h2>这是什么？</h2>
+  <p>把你的 <b>WorkBuddy / CodeBuddy 账号</b>变成一个<b>本地的小型 AI 接口</b>。
+     这样 Cursor、Cline、Cherry Studio 这些 AI 软件，就能用上你账号里的额度了。</p>
+  <div class="lock">🔒 <b>只在你自己的电脑上运行</b>，不对外开放，别人访问不到。</div>
+</section>
+
+<section>
+  <h2>开始前，先确认 2 件事</h2>
+  <ol>
+    <li>电脑是 <b>Windows 10 / 11</b>（本页以 Windows 为例，Mac 和 Linux 见文末）。</li>
+    <li>你有一个 <b>WorkBuddy 或 CodeBuddy 账号</b>（第 4 步要用它登录）。</li>
+  </ol>
+  <div class="warn">⚠️ <b>先解压！</b>不要直接在压缩包里双击运行，会出错。<br>
+      解压后文件夹里应该能看到 <code>install.ps1</code>、<code>wb2api-windows-amd64.exe</code>、<code>使用指南.html</code>（就是本页）这些文件。</div>
+</section>
+
+<section>
+  <h2><span class="step">第 1 步</span>安装（约 1 分钟）</h2>
+  <ol>
+    <li>打开解压出来的文件夹。</li>
+    <li>在文件夹的<b>空白处</b>按住 <b>Shift</b> 再点<b>鼠标右键</b>，选择
+        「<b>在此处打开 PowerShell 窗口</b>」<span class="dim">（Windows 11 叫「在终端中打开」）</span>。</li>
+    <li>在弹出的窗口里，复制下面这一行，粘贴进去，按回车：</li>
+  </ol>
+  <div class="code"><code>powershell -ExecutionPolicy Bypass -File .\install.ps1</code></div>
+  <p>看到 <code>==&gt; done</code> 就是装好了，这个窗口可以关掉。</p>
+  <details>
+    <summary>更简单：用 Windows 安装包（.msi）双击安装</summary>
+    <p>如果同目录里还有 <code>workbuddy2api-1.11.6-x64.msi</code>，直接<b>双击它</b>就能装，
+       全程<b>不需要管理员</b>，还会自动帮你建好<b>桌面</b>和<b>开始菜单</b>快捷方式。
+       装完从第 2 步继续即可。</p>
+    <p class="dim">两种装法二选一（装在同一个位置，别混用）。卸载在「设置 → 应用 → 已安装的应用」里找
+       WorkBuddy2API，默认会<b>保留</b>你的账号数据。</p>
+  </details>
+  <details>
+    <summary>右键没有那个菜单？点这里</summary>
+    <p>按 <b>Win + R</b>，输入 <code>powershell</code> 回车，然后依次粘贴这两行（每行按一次回车）：</p>
+    <div class="code"><code>cd "这里粘贴你解压出来的文件夹路径"</code></div>
+    <div class="code"><code>powershell -ExecutionPolicy Bypass -File .\install.ps1</code></div>
+    <p class="dim">小技巧：在文件夹地址栏点一下、按 Ctrl+C 就能复制路径。</p>
+  </details>
+</section>
+
+<section>
+  <h2><span class="step">第 2 步</span>设一个属于你自己的"密码"（约 30 秒）</h2>
+  <p>这个密码（API Key）是<b>你自己随便想一个</b>，不是从网上申请的，也不是账号密码。
+     它的作用只有一个：让你电脑上的 AI 软件连上这个网关。</p>
+  <p><b>关掉刚才的窗口，重新开一个新的 PowerShell 窗口</b>，粘贴下面这行（把中文换成你自己的）：</p>
+  <div class="code"><code>wb2api setkey 我的密码123</code></div>
+  <p class="dim">建议用字母 + 数字，例如 <code>mykey2026</code>。请记下来，第 5 步还要用。</p>
+  <details>
+    <summary>提示「wb2api 不是内部或外部命令」？点这里</summary>
+    <p>说明新命令还没生效（需要新开窗口）。用完整路径代替即可：</p>
+    <div class="code"><code>&amp; "$env:LOCALAPPDATA\workbuddy2api\wb2api.cmd" setkey 我的密码123</code></div>
+  </details>
+</section>
+
+<section>
+  <h2><span class="step">第 3 步</span>启动（约 10 秒）</h2>
+  <p>在同一个窗口里，粘贴并回车：</p>
+  <div class="code"><code>wb2api start</code></div>
+  <p>看到 <code>Started. Panel: http://127.0.0.1:17963/panel/</code> 就成功了。</p>
+  <div class="tip">💡 这一步之后，网关就在后台运行了。可以关掉窗口，不影响使用。</div>
+  <div class="tip">🖥️ 右下角<b>任务栏通知区</b>会出现一个小图标（托盘）。
+     左键单击 = 打开管理面板；右键菜单里有「重启服务 / 开机自启 / 退出」。
+     看不到的话，点一下任务栏上的 <b>^</b> 展开隐藏图标。</div>
+</section>
+
+<section>
+  <h2><span class="step">第 4 步</span>登录你的账号（约 1 分钟）</h2>
+  <ol>
+    <li>打开浏览器，访问：<a href="http://127.0.0.1:17963/panel/" target="_blank" rel="noreferrer">http://127.0.0.1:17963/panel/</a></li>
+    <li>把第 2 步设的密码粘进去，进入管理面板。</li>
+    <li>点面板里的「<b>添加账号</b>」，按提示用 WorkBuddy / CodeBuddy 扫码或打开授权链接登录。</li>
+  </ol>
+  <div class="tip">💡 建议加 <b>2 个以上</b>账号：某个号被限流时，网关会自动换号，不容易中断。</div>
+</section>
+
+<section>
+  <h2><span class="step">第 5 步</span>在 AI 软件里填 3 个格子</h2>
+  <p>打开你的 AI 软件（Cursor / Cline / Cherry Studio / Roo 等），找到"添加模型 / OpenAI 兼容 / 自定义 API"的地方，填：</p>
+  <table>
+    <tr><th>要填的格子</th><th>填什么</th></tr>
+    <tr><td>接口地址 / Base URL</td><td><code>http://127.0.0.1:17963/v1</code></td></tr>
+    <tr><td>API Key / 密钥</td><td>第 2 步你自己设的那个（例如 <code>mykey2026</code>）</td></tr>
+    <tr><td>模型 / Model</td><td><code>glm-5.3</code> 或 <code>deepseek-v4.1-flash</code> 或 <code>kimi-k2.7</code></td></tr>
+  </table>
+  <p class="dim">完整可用模型列表在面板里能看到。填完点"测试连接"，能通就成了。</p>
+</section>
+
+<section>
+  <h2>以后日常使用：记住 3 条命令</h2>
+  <table>
+    <tr><th>想做什么</th><th>输入</th></tr>
+    <tr><td>启动</td><td><code>wb2api start</code></td></tr>
+    <tr><td>停止</td><td><code>wb2api stop</code></td></tr>
+    <tr><td>看看还活着吗</td><td><code>wb2api status</code></td></tr>
+  </table>
+  <p class="dim">电脑重启后需要再 <code>wb2api start</code> 一次；不想每次手动，看下面「想开机自动启动」。</p>
+</section>
+
+<section>
+  <h2>让 AI Agent 帮你接入其他软件（可选，很省事）</h2>
+  <p>如果你在用 DSH、Claude Code，或者 Cursor 里那种能读写本机文件的 Agent，可以直接让它替你把网关配置到别的软件里。
+     把下面整段复制发给它，并把尖括号里的内容换成你的实际情况。</p>
+
+  <div class="code"><code>【复制给 AI Agent 的指令】
+
+你的任务：把本机已经在运行的 WorkBuddy2API 网关，接入到 &lt;目标软件&gt;。
+
+网关信息（必须原样使用，不要改写）：
+- Base URL : http://127.0.0.1:17963/v1
+- API Key  : &lt;把你第 2 步设的那个填在这里&gt;
+- 协议     : OpenAI Chat Completions（支持 SSE 流式）
+- 模型名   : 先用 GET /v1/models 拉完整列表；常用的有 glm-5.3、deepseek-v4.1-flash、kimi-k2.7
+- 可选前缀 : cn:&lt;模型名&gt; 强制国内版；global:&lt;模型名&gt; 强制国际版（前缀在出站前会被网关剥离）
+
+硬性要求：
+1. 只修改 &lt;目标软件&gt; 里 workbuddy2api 这一个 provider，其它 provider 原样保留；
+2. 改配置文件前先备份一份（文件名加时间戳后缀）；
+3. 改完用一次最小请求验证连通（POST /v1/chat/completions，max_tokens 设为 8），把 HTTP 状态和返回内容告诉我；
+4. 不要把 API Key、账号凭证写进日志，也不要上传到任何地方；
+5. 不要修改网关的监听地址（必须保持 127.0.0.1），不要把它暴露到局域网或公网；
+6. 如果 &lt;目标软件&gt; 不支持自定义 Base URL，直接告诉我，不要擅自换成别的方案。
+
+目标软件：&lt;Cursor / Cline / Cherry Studio / OpenCode / DSH / Claude Code / Roo …&gt;
+配置文件位置：你自己找（找不到就问我）。</code></div>
+
+  <h3>常见软件大致要改哪里</h3>
+  <table>
+    <tr><th>软件</th><th>位置（让 Agent 自己确认）</th></tr>
+    <tr><td>DSH</td><td><code>~/.dsh/settings.yaml</code> + <code>.credentials.yaml</code>（Windows：<code>%USERPROFILE%\.dsh\</code>）</td></tr>
+    <tr><td>OpenCode</td><td><code>~/.config/opencode/opencode.json</code></td></tr>
+    <tr><td>Cherry Studio</td><td>设置 → 模型服务 → 添加「OpenAI 兼容」自定义提供商</td></tr>
+    <tr><td>Cursor</td><td>Settings → Models → OpenAI API Key → Override Base URL</td></tr>
+    <tr><td>Cline / Roo Code</td><td>API Provider 选「OpenAI Compatible」→ 填 Base URL + Key</td></tr>
+  </table>
+
+  <h3>想自己动手确认一下？</h3>
+  <div class="code"><code>curl --noproxy "*" http://127.0.0.1:17963/v1/models -H "Authorization: Bearer 你的密码"</code></div>
+  <p class="dim">能返回一长串模型名，就说明网关和密钥都没问题。</p>
+
+  <div class="tip">💡 给 Agent 的更完整接入说明（端点契约、模型前缀、错误码语义：403/11140 别重试、429/6004 网关自动冷却、499 是客户端取消）见项目仓库里的 <code>AGENTS.md</code>。</div>
+</section>
+
+<section>
+  <h2>常见问题</h2>
+  <dl>
+    <dt>杀毒软件（火绒 / 360）提示"修改启动项 / 疑似木马"？</dt>
+    <dd>这是杀毒软件对"开机自启"的<b>误报</b>，不是病毒。自启由程序自己写一条启动记录完成。
+        处理：在杀毒软件里把文件夹 <code>%LOCALAPPDATA%\workbuddy2api</code> 加入<b>信任区</b>（或弹窗里选"信任"）。
+        你也可以干脆不开自启——手动 <code>wb2api start</code> 一样用。</dd>
+
+    <dt>Windows 提示"未知发布者"或被 SmartScreen 拦下？</dt>
+    <dd>因为程序没有购买数字签名证书。点「<b>更多信息</b>」→「<b>仍要运行</b>」即可。</dd>
+
+    <dt>想开机自动启动？</dt>
+    <dd>执行 <code>wb2api autostart on</code>；查看状态 <code>wb2api autostart status</code>；关闭 <code>wb2api autostart off</code>。
+        如果被安全策略拦住，再用 <code>wb2api autostart on --startup-folder</code>。</dd>
+
+    <dt>提示端口 17963 被占用？</dt>
+    <dd>通常是已经启动过一次（重复启动）。先 <code>wb2api stop</code>，再 <code>wb2api start</code>。
+        也可以换个端口：设置环境变量 <code>WB2API_PORT=18063</code> 后再启动。</dd>
+
+    <dt>AI 软件里测试连接报 502 / 连不上？</dt>
+    <dd>多半是电脑上开了代理软件（Clash / v2rayN 等）。请把 <code>127.0.0.1</code> 和 <code>localhost</code>
+        加入代理的"绕过 / 直连"列表。</dd>
+
+    <dt>我的账号和数据放在哪里？</dt>
+    <dd>程序在 <code>%LOCALAPPDATA%\workbuddy2api\</code>；账号凭证与配置在 <code>%USERPROFILE%\.workbuddy2api\</code>。
+        备份或搬家时，复制后一个文件夹即可。</dd>
+
+    <dt>怎么升级？</dt>
+    <dd>先 <code>wb2api stop</code>，然后用新版本目录重新跑一次 <code>install.ps1</code>，再 <code>wb2api start</code>。
+        配置和账号都会保留。</dd>
+
+    <dt>怎么彻底卸载？</dt>
+    <dd><code>wb2api autostart off</code> → <code>wb2api stop</code> →
+        删除 <code>%LOCALAPPDATA%\workbuddy2api</code> 和 <code>%USERPROFILE%\.workbuddy2api</code> 两个文件夹。</dd>
+  </dl>
+</section>
+
+<section>
+  <h2>Mac / Linux 用户</h2>
+  <p>命令几乎一样，只是装的时候在解压目录里执行：</p>
+  <div class="code"><code>./install.sh</code></div>
+  <p>之后的 <code>setkey</code> / <code>start</code> / <code>status</code> / <code>autostart</code> 完全相同。
+     如果提示没有权限，先执行 <code>chmod +x install.sh</code>。</p>
+  <p class="dim">macOS 首次运行可能提示"无法验证开发者"，在「系统设置 → 隐私与安全性」里点"仍要打开"即可。</p>
+</section>
+
+<footer>
+  <p class="big">最后一句安全提醒</p>
+  <p>你设的那个 API Key、以及 <code>%USERPROFILE%\.workbuddy2api</code> 里的账号凭证，
+     都相当于你账号的钥匙，<b>不要发给别人、不要上传网盘</b>。</p>
+  <p>本程序只监听本机 <code>127.0.0.1</code>；请勿改成 <code>0.0.0.0</code> 暴露到局域网或公网。</p>
+  <p>使用本程序请遵守 WorkBuddy / CodeBuddy（及上游）的服务条款；本项目与上游无关联。</p>
+</footer>
+
+</div>
+<script>
+  (function () {
+    var buttons = document.querySelectorAll('.copy');
+    for (var i = 0; i < buttons.length; i++) {
+      (function (btn) {
+        btn.addEventListener('click', function () {
+          var code = btn.parentNode.querySelector('code');
+          if (!code) { return; }
+          var text = code.innerText;
+          var done = function () {
+            var old = btn.innerText;
+            btn.innerText = '已复制';
+            setTimeout(function () { btn.innerText = old; }, 1200);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, function () { fallback(text, done); });
+          } else {
+            fallback(text, done);
+          }
+        });
+      })(buttons[i]);
+    }
+    function fallback(text, done) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+    var blocks = document.querySelectorAll('.code');
+    for (var j = 0; j < blocks.length; j++) {
+      if (!blocks[j].querySelector('.copy')) {
+        var b = document.createElement('button');
+        b.className = 'copy';
+        b.type = 'button';
+        b.innerText = '复制';
+        blocks[j].appendChild(b);
+      }
+    }
+  })();
+</script>
+</body>
+</html>
