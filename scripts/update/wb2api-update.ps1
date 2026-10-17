@@ -32,7 +32,7 @@ $ghRaw   = "https://raw.githubusercontent.com/$ghOwner/$ghRepo/main/latest.json"
 $ghRel   = "https://github.com/$ghOwner/$ghRepo/releases/latest/download/latest.json"
 $giteeRaw= "https://gitee.com/$ghOwner/$ghRepo/raw/main/latest.json"
 $proxies = @('https://ghproxy.net/', 'https://gh-proxy.com/', 'https://mirror.ghproxy.com/')
-$manifestSources = @($ghRaw)
+$manifestSources = @($ghRaw, $ghRel)
 foreach ($p in $proxies) { $manifestSources += ($p + $ghRel) }   # proxy prefix + full URL
 $manifestSources += $giteeRaw
 

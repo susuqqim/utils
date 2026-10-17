@@ -1,5 +1,9 @@
 # workbuddy2api（干净快照）
 
+> **归属**：本项目为 [`Sliverkiss/CodeBuddy2api`](https://github.com/Sliverkiss/CodeBuddy2api) 的 fork，
+> 面板改动的同步来源为 [`linguo2625469/workbuddy2api-panel`](https://github.com/linguo2625469/workbuddy2api-panel)。
+> 许可：**MIT**（见 `LICENSE`）；本 fork 的修改清单见 `NOTICE.md`。
+
 本目录是 `workbuddy2api` 网关的**干净快照**：只含源码/脚本/示例配置/文档，
 **不含**任何凭证（`.apikey`、`auths/`、`config.json`、运行态 `data/`）、构建产物（`*.exe`）
 或仓库历史。
