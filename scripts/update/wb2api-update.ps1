@@ -27,7 +27,7 @@ $versionFile= Join-Path $installDir 'version.txt'
 $tmpExe     = Join-Path $installDir 'wb2api-core.exe.download'
 
 # --- update sources (order matters; first working wins) -----------------------
-$ghOwner = 'susuqqim'; $ghRepo = 'workbuddy2api'
+$ghOwner = 'susuqqim'; $ghRepo = 'utils'
 $ghRaw   = "https://raw.githubusercontent.com/$ghOwner/$ghRepo/main/latest.json"
 $ghRel   = "https://github.com/$ghOwner/$ghRepo/releases/latest/download/latest.json"
 $proxies = @('https://ghproxy.net/', 'https://gh-proxy.com/', 'https://mirror.ghproxy.com/')
