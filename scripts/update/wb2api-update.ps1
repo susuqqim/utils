@@ -30,12 +30,10 @@ $tmpExe     = Join-Path $installDir 'wb2api-core.exe.download'
 $ghOwner = 'susuqqim'; $ghRepo = 'workbuddy2api'
 $ghRaw   = "https://raw.githubusercontent.com/$ghOwner/$ghRepo/main/latest.json"
 $ghRel   = "https://github.com/$ghOwner/$ghRepo/releases/latest/download/latest.json"
-$giteeRaw= "https://gitee.com/$ghOwner/$ghRepo/raw/main/latest.json"
 $proxies = @('https://ghproxy.net/', 'https://gh-proxy.com/', 'https://mirror.ghproxy.com/')
 $jsd        = "https://cdn.jsdelivr.net/gh/$ghOwner/$ghRepo@main/latest.json"   # jsDelivr CDN（实测可用）
 $manifestSources = @($ghRaw, $jsd, $ghRel)
 foreach ($p in $proxies) { $manifestSources += ($p + $ghRel) }   # proxy prefix + full URL
-$manifestSources += $giteeRaw
 
 function Log([string]$m) {
   $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
