@@ -34,6 +34,52 @@ type ReqLog struct {
 	MaxMB      int    `json:"max_mb,omitempty"`      // 0 = 默认 50MB
 }
 
+// StickyCfg 是 session_sticky 的配置。
+//
+// 2026-10 兼容性修复：早期版本把 session_sticky 写成**布尔**（"session_sticky": true），
+// 升级到新版本后 Go 的严格解码会报 "cannot unmarshal bool into ... struct"，导致
+// 网关**启动即失败**（老 config 不会被安装程序覆盖，见 MSI 的 CaSeedConfig）。
+// 这里自定义 UnmarshalJSON：布尔 true/false ⇒ 等价于 {enabled: true/false} 且用默认 TTL/GC。
+type StickyCfg struct {
+	Enabled    bool   `json:"enabled"`     // 默认 true
+	TTL        string `json:"ttl"`         // 会话绑定 TTL，默认 "30m"
+	GCInterval string `json:"gc_interval"` // 会话 GC 周期，默认 "5m"
+}
+
+// UnmarshalJSON 同时接受对象（新格式）与布尔（旧格式）。
+//
+// 关键：必须以**现有值**为底解码（`tmp := plain(*s)`）。ParseConfig 会先注入默认值再
+// 反序列化，若这里从零值开始，像 `{"session_sticky":{"ttl":"0s"}}` 这种只写一个字段的
+// 配置会丢掉 gc_interval 的默认值 ⇒ 后续校验报 "invalid duration"""（曾把
+// TestNegativeDurationsRejected 干挂）。布尔旧格式同理：只覆盖 enabled，保留默认 TTL/GC。
+func (s *StickyCfg) UnmarshalJSON(b []byte) error {
+	trimmed := strings.TrimSpace(string(b))
+	if strings.HasPrefix(trimmed, "true") || strings.HasPrefix(trimmed, "false") {
+		cur := *s
+		cur.Enabled = strings.HasPrefix(trimmed, "true")
+		if cur.TTL == "" {
+			cur.TTL = "30m"
+		}
+		if cur.GCInterval == "" {
+			cur.GCInterval = "5m"
+		}
+		*s = cur
+		return nil
+	}
+	type plain StickyCfg
+	tmp := plain(*s) // 以现有（默认）值为底
+	if err := json.Unmarshal(b, &tmp); err != nil {
+		return err
+	}
+	*s = StickyCfg(tmp)
+	return nil
+}
+
+// PlaceholderAPIKey 是 config.example.json 里的占位符。新装用户拿到的 config 里就是它，
+// 若把它当真密钥，用户既不知道密钥、又无法登录控制台（会被 401 拦住），最终卡死。
+// 因此加载时按"未设置"处理（等同于空 = 不鉴权），并让控制台自动弹出首次初始化提示。
+const PlaceholderAPIKey = "CHANGE_ME_BEFORE_USE"
+
 type Config struct {
 	Listen string `json:"listen"`  // ":7863"
 	APIKey string `json:"api_key"` // 空 = 不鉴权
@@ -169,12 +215,18 @@ type Config struct {
 	} `json:"upstash"`
 
 	Pool struct {
-		MaxInFlight        int     `json:"max_in_flight"`        // 单账号最大在途请求数，0 = 不限
-		BreakerThreshold   int     `json:"breaker_threshold"`    // 连续失败次数触发熔断，默认 3
-		BreakerCooldown    string  `json:"breaker_cooldown"`     // 基础熔断时长，默认 "30m"
-		BreakerCooldownMax string  `json:"breaker_cooldown_max"` // 指数退避封顶，默认 "6h"
-		IdleWeightPerHour  float64 `json:"idle_weight_per_hour"` // 闲置补偿：每小时未用 +0.5 权重
-		IdleWeightMax      float64 `json:"idle_weight_max"`      // 闲置补偿封顶，默认 5.0
+		MaxInFlight        int    `json:"max_in_flight"`        // 单账号最大在途请求数，0 = 不限
+		BreakerThreshold   int    `json:"breaker_threshold"`    // 连续失败次数触发熔断，默认 3
+		BreakerCooldown    string `json:"breaker_cooldown"`     // 基础熔断时长，默认 "30m"
+		BreakerCooldownMax string `json:"breaker_cooldown_max"` // 指数退避封顶，默认 "6h"
+		// 【P1-7】上游风控限制（11140 账号画像风控）防连坐三件套
+		RestrictedRotateMax   int     `json:"restricted_rotate_max"`   // 0（默认）= 收到 11140 即停手，不跨号重试
+		RestrictionTTL        string  `json:"restriction_ttl"`         // 限制持久化时长，默认 "2h"（到期自动放回池）
+		RestrictionWaveWindow string  `json:"restriction_wave_window"` // 波次统计窗口，默认 "15m"
+		RestrictionWaveMin    int     `json:"restriction_wave_min"`    // 窗口内被限制多少个号触发整池暂停，默认 2
+		RestrictionPause      string  `json:"restriction_pause"`       // 整池暂停时长，默认 = 窗口
+		IdleWeightPerHour     float64 `json:"idle_weight_per_hour"`    // 闲置补偿：每小时未用 +0.5 权重
+		IdleWeightMax         float64 `json:"idle_weight_max"`         // 闲置补偿封顶，默认 5.0
 		// Phase 3 加权调度与分块策略
 		ChunkQuotaCredits   float64 `json:"chunk_quota_credits"`   // 单账号连续消耗分块额度，默认 25.0，<=0 禁用分块
 		CriticalExpireHours float64 `json:"critical_expire_hours"` // 紧急清仓层小时数，默认 48.0
@@ -206,17 +258,16 @@ type Config struct {
 		CreditFloor int64 `json:"credit_floor,omitempty"`
 	} `json:"pool"`
 
-	SessionSticky struct {
-		Enabled    bool   `json:"enabled"`     // 默认 true
-		TTL        string `json:"ttl"`         // 会话绑定 TTL，默认 "30m"
-		GCInterval string `json:"gc_interval"` // 会话 GC 周期，默认 "5m"
-	} `json:"session_sticky"`
+	SessionSticky StickyCfg `json:"session_sticky"`
 
 	// 解析后
 	SoftRateDur            time.Duration `json:"-"`
 	SoftRateMaxDur         time.Duration `json:"-"`
 	BreakerCooldownDur     time.Duration `json:"-"`
 	BreakerCooldownMaxD    time.Duration `json:"-"`
+	RestrictionTTLD        time.Duration `json:"-"`
+	RestrictionWaveWinD    time.Duration `json:"-"`
+	RestrictionPauseD      time.Duration `json:"-"`
 	SessionTTL             time.Duration `json:"-"`
 	SessionGCInterval      time.Duration `json:"-"`
 	BalanceRefreshInterval time.Duration `json:"-"`
@@ -565,6 +616,10 @@ func applyEnv(c *Config) {
 }
 
 func (c *Config) normalize() error {
+	// 占位符 ⇒ 视为未设置（2026-10 首启体验）：避免"用户不知道密钥、控制台又进不去"的死锁。
+	if c.APIKey == PlaceholderAPIKey {
+		c.APIKey = ""
+	}
 	var err error
 	// 出站 base URL 校验（2026-10-03 加，第十轮审计）：
 	// 这四个字段决定"账号 access token 发往哪里"。此前**零校验** —— 面板（或任何能写
@@ -615,6 +670,25 @@ func (c *Config) normalize() error {
 	}
 	if c.SoftRateMaxDur < 0 {
 		return fmt.Errorf("cooldown.soft_rate_max: %s 非法（不能为负）", c.Cooldown.SoftRateMax)
+	}
+	// 【P1-7】风控限制相关默认值（空 = 默认；非法值报错，与其它时长同口径）
+	if c.Pool.RestrictionTTL == "" {
+		c.Pool.RestrictionTTL = "2h"
+	}
+	if c.RestrictionTTLD, err = time.ParseDuration(c.Pool.RestrictionTTL); err != nil {
+		return fmt.Errorf("pool.restriction_ttl: %w", err)
+	}
+	if c.Pool.RestrictionWaveWindow == "" {
+		c.Pool.RestrictionWaveWindow = "15m"
+	}
+	if c.RestrictionWaveWinD, err = time.ParseDuration(c.Pool.RestrictionWaveWindow); err != nil {
+		return fmt.Errorf("pool.restriction_wave_window: %w", err)
+	}
+	if c.Pool.RestrictionPause == "" {
+		c.Pool.RestrictionPause = c.Pool.RestrictionWaveWindow
+	}
+	if c.RestrictionPauseD, err = time.ParseDuration(c.Pool.RestrictionPause); err != nil {
+		return fmt.Errorf("pool.restriction_pause: %w", err)
 	}
 	if c.BreakerCooldownDur, err = time.ParseDuration(c.Pool.BreakerCooldown); err != nil {
 		return fmt.Errorf("pool.breaker_cooldown: %w", err)

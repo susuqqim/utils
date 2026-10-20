@@ -12,12 +12,33 @@ import (
 	"workbuddy2api/internal/auth"
 )
 
+// Restrict 上游风控限制（11140 账号画像风控）：禁用 **ttl 时长**，到期自动恢复可选。
+//
+// 【P1-7】与 Disable 的区别：Disable 是永久禁用（手工/session 死亡，restrictedUntil 为零）；
+// Restrict 记录到期时间，因为上游这类限制会自行解除（社区实证：数小时~次日），
+// 永久禁用会让恢复后的健康号白白浪费，且诱导用户去点"解冻"。
+func (p *Pool) Restrict(uid string, ttl time.Duration, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.disabled = true
+		e.paused = false
+		e.reason = reason
+		if ttl > 0 {
+			e.restrictedUntil = p.now().Add(ttl)
+		}
+		p.invalidateChunkLocked(uid)
+		p.dirty.Store(true)
+	}
+}
+
 func (p *Pool) Disable(uid, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.disabled = true
-		e.paused = false // 禁用是更强终态：不叠加暂停选号
+		e.paused = false                // 禁用是更强终态：不叠加暂停选号
+		e.restrictedUntil = time.Time{} // 永久禁用：显式清掉限制到期时间，避免被误判为"到期自动恢复"
 		e.reason = reason
 		p.invalidateChunkLocked(uid)
 		p.dirty.Store(true)
@@ -73,6 +94,7 @@ func (p *Pool) ReviveDisabled(uid string) {
 	if e, ok := p.byUID[uid]; ok && e.disabled {
 		e.disabled = false
 		e.paused = false // 与 Revive 统一：解冻是全清，避免"已解冻却永不被选"的幽灵号
+		e.restrictedUntil = time.Time{}
 		e.reason = ""
 		e.sessionDeadFails = 0
 		p.dirty.Store(true)
@@ -92,6 +114,7 @@ func (p *Pool) Revive(uid string) bool {
 	}
 	e.disabled = false
 	e.paused = false // 解冻是全清：暂停选号一并解除
+	e.restrictedUntil = time.Time{}
 	e.until = time.Time{}
 	e.coolKind = 0
 	e.reason = ""
@@ -751,7 +774,7 @@ func (p *Pool) countsDetailedForRealm(realm string) (total, healthy, cooling, di
 		}
 		total++
 		switch {
-		case e.disabled || e.paused:
+		case e.disabled && !e.restrictionExpired(p.now()) || e.paused:
 			disabled++
 		case !e.healthy(now):
 			cooling++
@@ -877,7 +900,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		LastResourceSync:  e.lastResourceSync,
 		Cooling:           now.Before(e.until) || now.Before(e.breakerUntil),
 		Reason:            e.reason,
-		Disabled:          e.disabled,
+		Disabled:          e.disabled && !e.restrictionExpired(p.now()),
 		Paused:            e.paused,
 		SuccessCount:      e.successCount,
 		ErrTotal:          e.errTotal,

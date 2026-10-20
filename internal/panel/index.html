@@ -659,6 +659,11 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v4.5M4.8 4.5a5 5 0 1 0 6.4 0"/></svg>
         <span>关闭</span>
       </button>
+
+        <button class="nav-btn" id="btnCheckUpdate" title="检查更新（网关内部完成，不弹控制台）">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v7.5M5 7l3 3 3-3"/><path d="M2.5 11.5v1A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5v-1"/></svg>
+          <span>检查更新</span>
+        </button>
     </div>
     <div class="sig">
       <div class="row"><span class="pulse" id="navPulse"></span><span id="navState">连接中</span></div>
@@ -672,7 +677,11 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <span class="sep">/</span>
       <span class="meta" id="subMeta">-</span>
       <div class="grow"></div>
-      <button class="icon ghost" id="btnTheme" title="切换明暗（跟随系统 → 浅色 → 深色）" aria-label="切换主题">
+      <button class="ghost" id="updBadge" hidden title="发现新版本"
+                style="font-size:12.5px;padding:4px 9px;margin-right:6px;border:1px solid var(--warn);color:var(--warn);background:var(--warn-soft);border-radius:7px">
+          <span id="updBadgeText">可更新</span>
+        </button>
+        <button class="icon ghost" id="btnTheme" title="切换明暗（跟随系统 → 浅色 → 深色）" aria-label="切换主题">
         <svg id="icoTheme" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z"/></svg>
       </button>
       <button id="btnRefresh">刷新</button>
@@ -1038,6 +1047,47 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
                 <input type="checkbox" name="adaptive_chunking">
                 <span class="hint">按模型单价自动切换 25/50/100 额度</span></div>
             </div>
+              <div class="hr"></div>
+              <div class="fld" style="margin:0 0 10px"><span class="lb">三档分块参数（仅「自适应三档分块」开启时生效）</span>
+                <span class="hint">按模型单价自动归类：极省档 / 常规档 / 旗舰档；每档可配「分块额度」与「最大轮数」。留空使用默认值（25/60 · 50/200 · 100/100）。</span></div>
+              <div class="grid3">
+                <label class="fld"><span class="lb">极省档·分块额度</span>
+                  <input name="tier_cheap_quota" type="number" step="0.5" min="0" placeholder="25.0">
+                  <span class="hint">单价 &le; 极省阈值时使用</span></label>
+                <label class="fld"><span class="lb">极省档·最大轮数</span>
+                  <input name="tier_cheap_max_reqs" type="number" step="1" min="0" placeholder="60">
+                  <span class="hint">0 = 不限制</span></label>
+                <label class="fld"><span class="lb">极省档·单价阈值</span>
+                  <input name="tier_cheap_cost_cutoff" type="number" step="0.01" min="0" placeholder="0.08">
+                  <span class="hint">默认 0.08 积分/次</span></label>
+              </div>
+              <div class="grid3">
+                <label class="fld"><span class="lb">常规档·分块额度</span>
+                  <input name="tier_normal_quota" type="number" step="0.5" min="0" placeholder="50.0">
+                  <span class="hint">介于极省与旗舰之间</span></label>
+                <label class="fld"><span class="lb">常规档·最大轮数</span>
+                  <input name="tier_normal_max_reqs" type="number" step="1" min="0" placeholder="200">
+                  <span class="hint">0 = 不限制</span></label>
+                <label class="fld"><span class="lb">旗舰档·单价阈值</span>
+                  <input name="tier_flagship_cost_cutoff" type="number" step="0.01" min="0" placeholder="0.80">
+                  <span class="hint">单价 &ge; 此值归旗舰档</span></label>
+              </div>
+              <div class="grid3">
+                <label class="fld"><span class="lb">旗舰档·分块额度</span>
+                  <input name="tier_flagship_quota" type="number" step="0.5" min="0" placeholder="100.0">
+                  <span class="hint">单价 &ge; 旗舰阈值时使用</span></label>
+                <label class="fld"><span class="lb">旗舰档·最大轮数</span>
+                  <input name="tier_flagship_max_reqs" type="number" step="1" min="0" placeholder="100">
+                  <span class="hint">0 = 不限制</span></label>
+                <label class="fld"><span class="lb">未知单价·冷启动分块</span>
+                  <input name="tier_unknown_quota" type="number" step="0.5" min="0" placeholder="15.0">
+                  <span class="hint">新模型无价格数据时的保守额度</span></label>
+              </div>
+              <div class="grid3">
+                <label class="fld"><span class="lb">未知单价·最大轮数</span>
+                  <input name="tier_unknown_max_reqs" type="number" step="1" min="0" placeholder="0">
+                  <span class="hint">默认 0（仅受分块额度约束）</span></label>
+              </div>
             <div class="hr"></div>
             <div class="grid2">
               <div class="fld"><span class="lb">柔性透气轮转 (Paced Rotation)</span>
@@ -1275,5 +1325,28 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 <div id="toasts"></div>
 
 <script src="app.js"></script>
+
+    <!-- [2026-10] 更新弹窗：左下角「检查更新」与右上角徽标共用 -->
+    <div id="updVeil" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.45);backdrop-filter:blur(2px)">
+      <div style="max-width:520px;margin:12vh auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;box-shadow:0 12px 40px rgba(0,0,0,.35)">
+        <h3 style="margin:0 0 10px;font-size:15.5px" id="updTitle">检查更新</h3>
+        <div id="updBusy" style="font-size:13px;color:var(--ink-3)">正在检查…</div>
+        <div id="updBody" style="display:none;font-size:13.5px;line-height:1.75">
+          <div>当前版本：<b id="updCur">-</b></div>
+          <div>最新版本：<b id="updLatest">-</b></div>
+          <div id="updAvailRow">状态：<b id="updAvail" style="color:var(--ok)">已是最新</b></div>
+          <div id="updMetaRow" style="color:var(--ink-3);font-size:12.5px">大小 <span id="updSize">-</span> · sha256 <span id="updSha">-</span></div>
+          <div id="updErrRow" style="display:none;color:var(--bad);font-size:12.5px">检查失败：<span id="updErr">-</span></div>
+          <div id="updUrlRow" style="display:none;margin-top:8px">
+            <div style="color:var(--ink-3);font-size:12.5px;margin-bottom:4px">下载地址（复制到浏览器或更新器使用）</div>
+            <input id="updUrl" readonly style="width:100%;font-size:12px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--line);border-radius:7px">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="ghost" id="updCopy" style="display:none">复制下载地址</button>
+          <button class="primary" id="updClose">关闭</button>
+        </div>
+      </div>
+    </div>
 </body>
 </html>

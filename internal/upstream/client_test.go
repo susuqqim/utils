@@ -103,7 +103,9 @@ func TestClassify(t *testing.T) {
 		// 注意：11140 不按 code 单独判定——该 code 也承载 rate-limiting 软限流文案
 		// （上方 {200, "code":11140 rate-limiting} 必须仍是 ErrSoftRate），只能靠 msg 区分。
 		{403, `{"error":{"data":{"code":11140,"msg":"request illegal"}}}`, ErrAccountFault},
-		{403, `request illegal`, ErrAccountFault},
+		// 2026-10-20（上游 PR #233）：裸 "request illegal"（无业务码）不再归属任何账号级判定——
+		// 11128 通道校验失败与 11140 账号限制文案相同，必须 code + 文案双条件，否则误封健康号。
+		{403, `request illegal`, ErrClient},
 		{429, `{"error":{"data":{"code":14017,"msg":"The trial version is not yet activated. Please log out of your current account and log in again to activate it immediately and start your free trial."}}}`, ErrAccountFault},
 		{400, `{"code":14017,"msg":"trial not activated"}`, ErrAccountFault},
 		// session 死亡优先于限流文案（401+12153 需人工重登，短冷却无意义）。

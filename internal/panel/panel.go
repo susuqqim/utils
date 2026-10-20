@@ -268,6 +268,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/usage/save", p.withAuth(p.usageSave))
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
+	p.mux.HandleFunc("GET /panel/api/update/check", p.withAuth(p.handleUpdateCheck))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
 	p.mux.HandleFunc("POST /panel/api/system/restart", p.withAuth(p.systemRestart))
 	p.mux.HandleFunc("POST /panel/api/system/shutdown", p.withAuth(p.systemShutdown))

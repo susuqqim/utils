@@ -45,6 +45,7 @@ func TestPanelRouteInventory(t *testing.T) {
 		"POST /panel/api/tasks/scan_all", "POST /panel/api/tasks/run_queue",
 		"POST /panel/api/checkin_all",
 		"GET /panel/api/model-locks",
+		"GET /panel/api/update/check", // 只读：拉 latest.json 比对版本，不改任何状态
 		"GET /panel/api/reqlog", "POST /panel/api/travel_all",
 		"POST /panel/api/activity_all", "POST /panel/api/balance_all",
 		"POST /panel/api/keepalive_all", "POST /panel/api/usage/save",

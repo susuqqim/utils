@@ -88,6 +88,12 @@ $launcherTxt = $launcherTxt.Replace("`r`n", "`n").Replace("`r", "`n").Replace("`
 Copy-Item (Join-Path $src 'config.example.json')   (Join-Path $stage 'config.example.json')   -Force
 Copy-Item (Join-Path $here '使用指南.html')        (Join-Path $stage '使用指南.html')        -Force
 Copy-Item (Join-Path $here 'README-quickstart.md') (Join-Path $stage 'README-quickstart.md') -Force
+# updater (auto-update check/apply) + installed version marker
+Copy-Item (Join-Path $repo 'workbuddy2api\scripts\update\wb2api-update.ps1') (Join-Path $stage 'wb2api-update.ps1') -Force
+Copy-Item (Join-Path $repo 'workbuddy2api\scripts\update\make-manifest.ps1') (Join-Path $stage 'make-manifest.ps1') -Force
+[IO.File]::WriteAllText((Join-Path $stage 'version.txt'), $Version, (New-Object Text.UTF8Encoding($false)))
+Copy-Item (Join-Path $repo 'workbuddy2api\scripts\native\setup-key.ps1') (Join-Path $stage 'setup-key.ps1') -Force
+
 
 # config 模板的 listen 改写为 127.0.0.1:17963（与 install.ps1 的安装期改写一致）。
 # MSI 会把这份模板**播种**成数据目录里的初始 config.json；若保留 ":17963"（绑 0.0.0.0），

@@ -116,6 +116,12 @@
       </Component>
 
       <!-- 把安装目录追加进 per-user PATH（System="no"）；卸载时 MSI 自动移除该项 -->
+      <Component Id="cmpUpdater" Guid="{A7C4E2B1-9D63-4F58-8B21-6C0E5D9A7F13}">
+        <File Id="filUpdatePs1" Source="$(StageDir)\wb2api-update.ps1" KeyPath="yes"/>
+        <File Id="filMakeManifest" Source="$(StageDir)\make-manifest.ps1"/>
+        <File Id="filVersionTxt" Source="$(StageDir)\version.txt"/>
+        <File Id="filSetupKey" Source="$(StageDir)\setup-key.ps1"/>
+      </Component>
       <Component Id="cmpPath" Guid="{38A18344-D741-5D0C-E328-D78AD100A9F9}">
         <Environment Id="EnvPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last"
                      Action="set" System="no" Permanent="no"/>
@@ -145,8 +151,6 @@
         <Shortcut Id="scDeskStart" Name="WorkBuddy2API"
                   Target="[INSTALLFOLDER]wb2api.cmd" Arguments="start"
                   WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="no"/>
-        <Shortcut Id="scDeskPanel" Name="WorkBuddy2API 管理面板"
-                  Target="[INSTALLFOLDER]wb2api-panel.url" Icon="AppIcon" Advertise="no"/>
         <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API" Name="DesktopInstalled"
                        Type="integer" Value="1" KeyPath="yes"/>
       </Component>

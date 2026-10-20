@@ -415,7 +415,10 @@ async function loadModels() {
     const probes = pr.probes || {};
     const probeKeys = Object.keys(probes);
     const probeOf = id => probes[id] || probes[probeKeys.find(k => k.endsWith(':' + id))];
-    tb.innerHTML = list.map(m => {
+    // 2026-10：模型页按 realm 分成「国内版 / 国际版」两块（用户需求）。
+    // 命名协议：cn 模型带 cn: 前缀或裸名，global 模型带 global: 前缀（后端只发 global:<id>）。
+    const __modelsSplitByRealm = true;
+    const rowOf = m => {
       const eff = (m.supported_efforts || []).slice();
       if (m.can_disable_thinking && eff.length && !eff.includes('off')) eff.push('off（可关）');
       const effs = eff.length ? eff.map(e => '<span class="tag warn">' + esc(e) + '</span>').join(' ')
@@ -434,7 +437,18 @@ async function loadModels() {
         '<td class="efs" style="white-space:normal">' + effs + '</td>' +
         '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
         outCell(m, probeOf(m.id)) + '</tr>';
-    }).join('');
+    };
+    const cnModels = list.filter(m => !String(m.id).startsWith('global:'));
+    const glModels = list.filter(m => String(m.id).startsWith('global:'));
+    const sectRow = (title, n, hint) =>
+      '<tr class="sect"><td colspan="7" style="background:var(--surface-2);font-weight:600;padding:8px 10px">' +
+      title + '（' + n + '）' + (hint ? ' <span style="font-weight:400;color:var(--ink-3);font-size:12.5px">' + hint + '</span>' : '') + '</td></tr>';
+    let html = '';
+    html += sectRow('🇨🇳 国内版', cnModels.length, cnModels.length ? '' : '（池内无 cn 账号或上游未返回）');
+    if (cnModels.length) html += cnModels.map(rowOf).join('');
+    html += sectRow('🌐 国际版', glModels.length, glModels.length ? '' : '（未启用 global 或池内无 global 账号）');
+    if (glModels.length) html += glModels.map(rowOf).join('');
+    tb.innerHTML = html;
     const hit = list.filter(m => probeOf(m.id)).length;
     $('mdNote').textContent = list.length + ' 个模型 · 已刷新降级缓存' + (hit ? ' · ' + hit + ' 个有实测上限' : '');
   } catch (e) {
@@ -2277,4 +2291,107 @@ async function loadReqLog() {
   } catch (e) {
     box.innerHTML = '<div class="hint">加载失败：' + esc(String(e && e.message || e)) + '</div>';
   }
+}
+
+/* ── [2026-10] 检查更新（用户需求）────────────────────────────────────────
+   网关在 Go 进程内取清单（net/http），**从不 spawn powershell/cmd** ⇒ 不弹控制台窗口。
+   端点：GET /panel/api/update/check[?force=1] ⇒ {current,latest,available,url,error}
+   入口：左下角「检查更新」；发现新版本时在右上角（明暗切换左侧）显示徽标。 */
+function openUpdateDialog(d) {
+  const veil = $('updVeil');
+  if (!veil) return;
+  const q = id => $(id) || null;   // 元素缺失时静默降级（面板测试的最小 DOM 桩）
+  veil.style.display = 'block';
+  (q('updBusy')||{}).style.display = d ? 'none' : 'block';
+  (q('updBody')||{}).style.display = d ? 'block' : 'none';
+  if (!d) return;
+  (q('updCur')||{}).textContent = d.current || '-';
+  (q('updLatest')||{}).textContent = d.latest || '-';
+  const avail = !!d.available;
+  (q('updAvail')||{}).textContent = d.error ? '检查失败' : (avail ? '发现新版本' : '已是最新');
+  (q('updAvail')||{}).style.color = d.error ? 'var(--bad)' : (avail ? 'var(--warn)' : 'var(--ok)');
+  (q('updMetaRow')||{}).style.display = d.latest ? 'block' : 'none';
+  (q('updSize')||{}).textContent = d.size ? (d.size + ' B') : '-';
+  (q('updSha')||{}).textContent = d.sha256 ? (d.sha256.slice(0, 16) + '…') : '-';
+  (q('updErrRow')||{}).style.display = d.error ? 'block' : 'none';
+  (q('updErr')||{}).textContent = d.error || '';
+  const url = d.url || '';
+  (q('updUrlRow')||{}).style.display = (avail && url) ? 'block' : 'none';
+  (q('updUrl')||{}).value = url;
+  (q('updCopy')||{}).style.display = (avail && url) ? 'inline-block' : 'none';
+  (q('updTitle')||{}).textContent = d.error ? '检查更新（失败）' : (avail ? '发现新版本 ' + (d.latest || '') : '检查更新');
+}
+function updShow(d) {
+  const b = $('updBadge'), t = $('updBadgeText');
+  if (!b || !t) return;
+  if (d && d.available) {
+    b.hidden = false;
+    t.textContent = '可更新 ' + (d.latest || '');
+    b.title = '发现新版本 ' + (d.latest || '') + '（当前 ' + (d.current || '') + '）· 点击查看下载页';
+    b.onclick = function () { openUpdateDialog(d); };   // 用户要求：点提示弹更新弹窗
+  } else if (d && d.error) {
+    b.hidden = false;
+    t.textContent = '检查失败';
+    b.title = '更新检查失败：' + d.error;
+    b.onclick = null;
+  } else {
+    b.hidden = true; b.onclick = null;
+  }
+}
+async function checkUpdatePanel(force) {
+  const btn = $('btnCheckUpdate');
+  if (btn) { btn.disabled = true; btn.title = '正在检查…'; }
+  openUpdateDialog(null);   // 先弹出"正在检查…"（按钮与徽标统一体验）
+  try {
+    const d = await api('update/check' + (force ? '?force=1' : ''));
+    window.__lastUpdate = d;
+    updShow(d);
+    openUpdateDialog(d);
+    if (btn) btn.title = '已检查：当前 ' + (d.current || '?') + '，最新 ' + (d.latest || '?');
+    return d;
+  } catch (e) {
+    updShow({ error: (e && e.message) ? e.message : String(e) });
+    if (btn) btn.title = '检查失败';
+  } finally { if (btn) btn.disabled = false; }
+}
+(function () {
+  const b = $('btnCheckUpdate');
+  if (b) b.onclick = function () { checkUpdatePanel(true); };
+// 只在"确实有新版"时自动弹框（QA：每次开面板都弹太烦）；失败只更新按钮提示。
+setTimeout(function () {
+  checkUpdatePanel(false).then(function (d) {
+    if (d && d.available) openUpdateDialog(d);
+  });
+}, 1200);
+})();
+
+/* 弹窗交互：关闭 / 复制 / 徽标与按钮共用 */
+// 更新弹窗的 DOM 在 app.js 之后解析（index.html 里 <script> 在前）⇒ 必须等 DOMContentLoaded，
+// 否则 close/copy 在 document 里查不到元素，弹窗关不掉（QA 实测）。
+function bindUpdateDialog() {
+  const veil = $('updVeil');
+  if (!veil) return;
+  const closeBtn = $('updClose'), copyBtn = $('updCopy'), urlInput = $('updUrl');
+  // 空值守卫：面板测试用最小 DOM 桩加载本文件，元素缺失时不得抛异常
+  if (closeBtn) closeBtn.onclick = function () { veil.style.display = 'none'; };
+  veil.onclick = function (e) { if (e.target === veil) veil.style.display = 'none'; };
+  if (urlInput) urlInput.onclick = function () { urlInput.select(); };   // updUrlSelect：替代被 CSP 拦掉的行内 onclick
+  if (!copyBtn) return;
+  copyBtn.onclick = async function () {
+    const v = (urlInput && urlInput.value) || '';
+    try { await navigator.clipboard.writeText(v); copyBtn.textContent = '已复制 ✓'; }
+    catch (e) { if (urlInput) urlInput.select(); copyBtn.textContent = '请手动复制'; }
+    setTimeout(function () { copyBtn.textContent = '复制下载地址'; }, 1800);
+  };
+  const badge = $('updBadge');
+  if (badge) badge.onclick = function () {
+    const d = (window.__lastUpdate || null);
+    openUpdateDialog(d);
+    if (!d) { checkUpdatePanel(false).then(function (r) { if (r) openUpdateDialog(r); }); }
+  };
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bindUpdateDialog);
+} else {
+  bindUpdateDialog();
 }

@@ -1,4 +1,4 @@
-# WorkBuddy2API native installer (Windows) -- no Docker, no npm.
+﻿# WorkBuddy2API native installer (Windows) -- no Docker, no npm.
 # Online:  $env:WB2API_BASE_URL='https://host/native'; irm "$env:WB2API_BASE_URL/install.ps1" | iex
 # Offline: run  powershell -ExecutionPolicy Bypass -File install.ps1  in the extracted folder.
 $ErrorActionPreference = 'Stop'
@@ -142,3 +142,12 @@ Write-Host "next:"
 Write-Host "    wb2api setkey <YOUR_KEY>"
 Write-Host "    wb2api start"
 Write-Host "    open http://127.0.0.1:17963/panel/"
+
+# [install-ux] 安装完成后引导设置 api_key（已设置则静默返回；密钥只显示一次）
+$__cfg = Join-Path $env:USERPROFILE '.workbuddy2api\config.json'
+$__sk  = Join-Path $PSScriptRoot 'setup-key.ps1'
+if (Test-Path $__sk) {
+  Write-Host ''
+  Write-Host '==> 检查 API 密钥 ...'
+  & $__sk -Config $__cfg
+}

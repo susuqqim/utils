@@ -35,6 +35,18 @@ type Config struct {
 	Upstream  *upstream.Client
 	APIKey    string // 空 = 不鉴权（静态值；与 Live 同时给出时 Live 优先）
 	MaxRotate int    // 单请求最多换号次数，默认 3
+	// 【P1-7】RestrictedRotateMax 收到 11140（账号画像风控）后还允许跨号重试的次数。
+	// 0（默认）= 收到即停手：同一请求继续换号会被上游视为同源批量试探，
+	// 实测 6 分钟内把 3 个账号逐个连坐限制。
+	RestrictedRotateMax int
+	// RestrictionTTL 11140 限制的持久化时长（默认 2h）；到期后账号自动回到可选池。
+	RestrictionTTL time.Duration
+	// RestrictionWaveWindow / RestrictionWaveMin 整池波次暂停：同一 realm 在窗口内
+	// 被限制 ≥Min 个账号 ⇒ 暂停该 realm 一段时间，避免继续试探连坐。
+	RestrictionWaveWindow time.Duration
+	RestrictionWaveMin    int
+	// RestrictionPause 波次暂停时长（默认 = 窗口）。
+	RestrictionPause time.Duration
 	// Panel 管理面板 handler（可选；nil = 不挂载）。挂载在 /panel/ 前缀下，
 	// 面板自带 Bearer 鉴权（同一 api_key）与内嵌静态资源，主路由只做转发。
 	Panel http.Handler
@@ -110,12 +122,30 @@ type Handler struct {
 	hidden map[string]struct{} // 由 Config.HiddenModels 构建（见 hidden_models.go）
 	cfg    Config
 	mux    *http.ServeMux
+
+	// 【P1-7】上游风控限制的波次记账：realm → 最近的 11140 时刻；以及整池暂停截止时间。
+	restrictMu       sync.Mutex
+	restrictHits     map[string][]time.Time
+	realmPausedUntil map[string]time.Time
 }
 
 // NewHandler 构建 handler。
 func NewHandler(cfg Config) *Handler {
 	if cfg.MaxRotate <= 0 {
 		cfg.MaxRotate = 3
+	}
+	// 【P1-7】上游风控限制相关默认值：2h 限制、15min 窗口 / 2 个号触发、暂停 15min。
+	if cfg.RestrictionTTL <= 0 {
+		cfg.RestrictionTTL = 2 * time.Hour
+	}
+	if cfg.RestrictionWaveWindow <= 0 {
+		cfg.RestrictionWaveWindow = 15 * time.Minute
+	}
+	if cfg.RestrictionWaveMin <= 0 {
+		cfg.RestrictionWaveMin = 2
+	}
+	if cfg.RestrictionPause <= 0 {
+		cfg.RestrictionPause = cfg.RestrictionWaveWindow
 	}
 	if cfg.SoftCooldown <= 0 {
 		cfg.SoftCooldown = 600 * time.Second // 软限流基数（连续触发按指数退避放大）
@@ -501,6 +531,32 @@ func rewriteModel(body []byte, bare string) []byte {
 // 拉取失败记录时间戳进入 5min 负缓存，冷却期内直接用静态表，避免反复打上游。
 // 只从 CN realm 账号拉取（PickExcludingForRealm(nil,"","cn")）：全局账号的模型列表
 // 未必与 CN 一致，动态模型表只服务 CN 前缀（global 用内置静态名单）。
+// modelsFetchTimeout 限制「拉取动态模型目录」的最长等待时间。
+// 2026-10 缺陷：FetchModels 内部是 chan receive，网络卡住时会**无界阻塞** ⇒ /v1/models
+// 与面板一起挂死（测试 TestModelsEndpoint 曾在 TLS 握手上挂到超时）。这里改为有界等待，
+// 超时按失败处理（走既有 5min 负缓存 + 静态表回退）。var 而非 const，便于测试覆写。
+var modelsFetchTimeout = 8 * time.Second
+
+// fetchModelsBounded 在 modelsFetchTimeout 内等待 fn；超时返回 error（不阻塞调用方）。
+// 通道带缓冲，超时后 goroutine 仍能写入并退出，不会泄漏阻塞。
+func fetchModelsBounded(acct *auth.Auth, fn func(*auth.Auth) ([]upstream.ModelInfo, error)) ([]upstream.ModelInfo, error) {
+	type res struct {
+		infos []upstream.ModelInfo
+		err   error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		i, e := fn(acct)
+		ch <- res{i, e}
+	}()
+	select {
+	case r := <-ch:
+		return r.infos, r.err
+	case <-time.After(modelsFetchTimeout):
+		return nil, fmt.Errorf("fetch models: timeout after %v", modelsFetchTimeout)
+	}
+}
+
 func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 	dynamicModelsCache.RLock()
 	if len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
@@ -523,7 +579,7 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 	if acct == nil {
 		return nil
 	}
-	infos, err := h.cfg.Upstream.FetchModels(acct)
+	infos, err := fetchModelsBounded(acct, h.cfg.Upstream.FetchModels)
 	if err != nil || len(infos) == 0 {
 		// 拉取失败惩罚该账号，避免下次 Pick 又选中同一个反复失败；lastFail 保持全局负缓存。
 		h.cfg.Pool.NoteError(acct.UID)
@@ -812,6 +868,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		st.uid = acct.UID
 		tried[acct.UID] = true
 
+		// 【P1-7】整池波次暂停：同域窗口内已有 N 个账号被上游限制 ⇒ 本域整体停手一段时间，
+		// 避免继续试探把剩余账号也拖下水（实测连坐是"一个请求遍历整池"放大出来的）。
+		if h.realmPaused(acct.Realm()) {
+			st.status = http.StatusServiceUnavailable
+			lastErr = fmt.Errorf("realm %s paused after upstream account restrictions", acct.Realm())
+			log.Printf("WARN: [server] realm=%s 处于风控波次暂停中，本请求不再向该域发起上游调用", acct.Realm())
+			break
+		}
+
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
 		if !h.cfg.Pool.Acquire(acct.UID) {
 			// 若被抢的正是粘性号，立即解绑并回落普通轮换，避免下一轮仍撞同一个
@@ -985,6 +1050,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel)
 			fail(acct.UID)
+			// 【P1-7】11140 账号画像风控：默认**不跨号重试**。同一请求继续换号会被上游
+			// 视为同源批量试探，把整池账号逐个连坐（实测 6 分钟内 3 个号连续被限制）。
+			if kind == upstream.ErrAccountFault && upstream.IsAccountRestricted(string(respBody)) {
+				h.noteRestriction(acct)
+				if h.cfg.RestrictedRotateMax <= 0 {
+					st.status = http.StatusForbidden
+					writeOpenAIError(w, http.StatusForbidden, "account_restricted",
+						"上游判定该账号存在异常使用行为并已限制（11140）。请在 WorkBuddy 内提交反馈申诉；本次请求不再跨账号重试，以免连坐封禁。")
+					return
+				}
+			}
 			continue
 		}
 		if peek.Stream {
@@ -1595,6 +1671,11 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 402 + 余额关键词即积分耗尽：同步冷却到次日 04:00（签到任务 09/21 点恢复），
 		// 不需要异步核查（冗余）。立即换号。
 		h.cfg.Pool.CooldownUntilTomorrow4AM(uid, "余额不足")
+	case upstream.ErrWafBlock:
+		// 上游 WAF 拦截页（403 + HTML）：出口被风控，不是账号故障也不是请求错误。
+		// 语义是"稍后重试" ⇒ 软冷却 + 抖动退避（90~120s），让轮转/重试避开这段窗口。
+		jitter := time.Duration(time.Now().UnixNano()%30) * time.Second
+		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, 90*time.Second+jitter, "upstream WAF 403")
 	case upstream.ErrSoftRate:
 		// 模型级 6004 且带「将在 … 重置」时间（issue #31）：冷却到上游明说的重置墙钟
 		// （封顶 soft_rate_max），记录触发模型 → 该账号对**其他模型**请求可豁免冷却。
@@ -1619,6 +1700,11 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 404 短冷却（软冷却），防雪崩。固定 notFoundCooldown，不随 soft_rate 退避：
 		// 偶发路径缺失不是限流信号，不该按限流惩罚升级。
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, notFoundCooldown, "upstream 404")
+	case upstream.ErrChannelRefused:
+		// 11128 通道校验失败（上游认为请求不是官方客户端发出）：账号本身健康，
+		// 不冷却、不熔断、不计错，交给轮转继续；全局性通道问题由上层最终返回。
+		log.Printf("[pool] channel refused (11128) uid=%s：请求未通过通道校验，账号不罚", logfmt.UID8(uid))
+		return
 	case upstream.ErrAccountFault:
 		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultMarkers 一致）：
 		//   - "request illegal"（code 11140）→ 账号级**授权封禁**：软冷却到期也不会自动
@@ -1628,8 +1714,13 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
 		// 两条路径对坏号都立刻换号（同一请求轮转出池），只是后续可恢复性不同。
 		// 大小写不敏感（与 Classify 的 marker 匹配同口径）。
-		if strings.Contains(strings.ToLower(body), "request illegal") {
-			h.cfg.Pool.Disable(uid, "account banned by upstream (11140 request illegal), re-login required")
+		// 11128（通道校验失败）与 11140（账号被限制）msg 同为 "request illegal"，
+		// Classify 已按业务码分流 ⇒ 这里只处理真正的 11140（code + 文案双条件）。
+		if upstream.IsAccountRestricted(body) {
+			// 【P1-7】用 Restrict（带到期时间）而不是 Disable：上游这类限制会自行解除，
+			// 永久禁用会让恢复后的健康号白白浪费，并诱导用户去点"解冻"。
+			h.cfg.Pool.Restrict(uid, h.cfg.RestrictionTTL,
+				"account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction")
 			return
 		}
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.softCooldown(), "account fault (14017)")
@@ -1730,4 +1821,46 @@ func resolveCacheConvID(body []byte, hdr http.Header, sessKey string) string {
 		return v
 	}
 	return sessKey
+}
+
+// 【P1-7】上游风控限制的记账与整池波次暂停。
+
+// noteRestriction 记录一次 11140 账号限制；同 realm 在窗口内达到阈值时暂停该域一段时间。
+func (h *Handler) noteRestriction(a *auth.Auth) {
+	if a == nil {
+		return
+	}
+	realm := a.Realm()
+	now := time.Now()
+	h.restrictMu.Lock()
+	defer h.restrictMu.Unlock()
+	if h.restrictHits == nil {
+		h.restrictHits = make(map[string][]time.Time)
+	}
+	kept := h.restrictHits[realm][:0]
+	for _, t := range h.restrictHits[realm] {
+		if now.Sub(t) <= h.cfg.RestrictionWaveWindow {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	h.restrictHits[realm] = kept
+	if len(kept) < h.cfg.RestrictionWaveMin {
+		return
+	}
+	if h.realmPausedUntil == nil {
+		h.realmPausedUntil = make(map[string]time.Time)
+	}
+	h.realmPausedUntil[realm] = now.Add(h.cfg.RestrictionPause)
+	h.restrictHits[realm] = nil
+	log.Printf("WARN: [server] realm=%s 在 %s 内已有 %d 个账号被上游限制 ⇒ 整池暂停 %s（避免继续试探连坐）",
+		realm, h.cfg.RestrictionWaveWindow, len(kept), h.cfg.RestrictionPause)
+}
+
+// realmPaused 报告该 realm 是否处于风控波次暂停中。
+func (h *Handler) realmPaused(realm string) bool {
+	h.restrictMu.Lock()
+	defer h.restrictMu.Unlock()
+	until, ok := h.realmPausedUntil[realm]
+	return ok && time.Now().Before(until)
 }

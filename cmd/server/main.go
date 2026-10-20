@@ -38,7 +38,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.7-panel"
+const appVersion = "1.11.11-panel"
 
 // restartHidden 为真时（托盘模式），重启子进程用 CREATE_NO_WINDOW 拉起，
 // 避免新控制台闪窗；仅 Windows 生效（见 restart_windows.go）。
@@ -117,6 +117,17 @@ func main() {
 	if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "autostart") {
 		os.Exit(runAutostartCmd(os.Args[2:]))
 	}
+
+	// [2026-10] 更新自检（用户需求：装了新版要有提示）。
+	// 必须在 main() 本体：曾误放进 restartSvc 闭包 ⇒ 只有"点重启"才跑，正常启动永不执行（QA 抓到）。
+	// 30s 让监听/托盘就绪；有新版由 tray.Notify 弹 Windows 通知 —— 全程进程内，不 spawn cmd。
+	go func() {
+		if !tray.Supported() {
+			return // 无托盘（Linux/headless）时不出站、不通知：面板按钮仍可手动检查
+		}
+		time.Sleep(30 * time.Second)
+		checkUpdateAndNotify(appVersion)
+	}()
 
 	cfgPath := flag.String("config", "config.json", "path to config json")
 	noTray := flag.Bool("no-tray", false, "禁用系统托盘图标（Windows；等价于 config ui.tray=false）")
@@ -484,8 +495,14 @@ func main() {
 		Live:         live,
 		Usage:        rec,
 		PromptMode:   cfg.Prompt.Mode,
-		PromptText:   cfg.PromptText,
-		MaxBodyBytes: int64(cfg.Server.MaxBodyMB) << 20, // MB → 字节
+		// 【P1-7】上游风控限制防连坐
+		RestrictedRotateMax:   cfg.Pool.RestrictedRotateMax,
+		RestrictionTTL:        cfg.RestrictionTTLD,
+		RestrictionWaveWindow: cfg.RestrictionWaveWinD,
+		RestrictionWaveMin:    cfg.Pool.RestrictionWaveMin,
+		RestrictionPause:      cfg.RestrictionPauseD,
+		PromptText:            cfg.PromptText,
+		MaxBodyBytes:          int64(cfg.Server.MaxBodyMB) << 20, // MB → 字节
 		// global realm 开关（handler 侧第三道闸：modelList 据此决定是否列 global 名单）。
 		GlobalEnabled: cfg.Global.Enabled,
 	})
@@ -1155,3 +1172,22 @@ func (i ignoreErrWriter) Write(p []byte) (int, error) {
 }
 
 func ignoreWriteErr(w io.Writer) io.Writer { return ignoreErrWriter{w: w} }
+
+// checkUpdateAndNotify 检查新版本并在有更新时弹出 Windows 通知（托盘气泡）。
+// 失败一律静默（离线环境不应产生噪音），只写一行日志。
+func checkUpdateAndNotify(current string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	res := panel.CheckUpdateFor(ctx, current, true)
+	if res.Error != "" {
+		log.Printf("[update] 检查失败（忽略）: %v", res.Error)
+		return
+	}
+	if !res.Available {
+		log.Printf("[update] 已是最新（当前 %s，清单 %s）", current, res.Latest)
+		return
+	}
+	log.Printf("[update] 发现新版本 %s（当前 %s）", res.Latest, current)
+	_ = tray.Notify("发现新版本 "+res.Latest,
+		"当前 "+current+" → 最新 "+res.Latest+"。打开控制台「检查更新」查看下载地址。")
+}

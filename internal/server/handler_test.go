@@ -30,6 +30,9 @@ import (
 // TestMain 默认关闭聊天表格日志（chatLogEnabled=false），消除 go test 期间的 stdout 噪音。
 // 断言表格行输出的测试（logging_test.go 中的 ChatLogs/LogChatRow 系列）用 withChatLog 临时开启。
 func TestMain(m *testing.M) {
+	// 测试里把动态模型拉取上界压到 100ms：生产默认 8s，若用在测试里会让
+	// 每个涉及 /v1/models 的用例都等满 8 秒，全量套件从 ~40s 涨到 >15min。
+	modelsFetchTimeout = 2 * time.Second // 太紧（100ms）会把"5 次探测含重试"的假上游用例提前掐断，见 TestModelsNegativeCacheOnFetchFailure
 	chatLogEnabled = false
 	os.Exit(m.Run())
 }
@@ -577,7 +580,9 @@ func TestChatSoftCoolsOnRateLimitBody(t *testing.T) {
 // 轮换到下一个号、后续请求直接跳过。
 // 修复前 Classify 对 403+request illegal 归 ErrClient → applyErrorPolicy 走 default
 // 只换号不罚，坏号留在可用池反复被选中刷风控；软冷却列后来只是临时止血，到期复发。
-func TestChatAccountFault11140Disables(t *testing.T) {
+// 【P1-7】11140（账号画像风控）默认**不跨号重试**：同一请求继续换号会被上游视为同源
+// 批量试探，实测 6 分钟内把 3 个账号逐个连坐限制。收到 11140 即停手并把原因交给客户端。
+func TestChatAccountFault11140StopsRotation(t *testing.T) {
 	calls := map[string]int{}
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		calls[authz]++
@@ -590,42 +595,96 @@ func TestChatAccountFault11140Disables(t *testing.T) {
 		&auth.Auth{UID: "bad", AccessToken: "at-bad", ExpiresAt: 9999999999},
 		&auth.Auth{UID: "good", AccessToken: "at-good", ExpiresAt: 9999999999},
 	)
-	// 让 bad 积分更高被先选中（与 TestChatRotatesOnHardCredit 同一确定性手法）。
 	p.SetCredits("bad", 2000)
 	p.SetCredits("good", 1000)
-	const cool = 90 * time.Second
-	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: cool})
+	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: 90 * time.Second})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("默认应停手并返回 403 account_restricted，实得 code=%d body=%s", rec.Code, rec.Body)
+	}
+	if calls["Bearer at-bad"] != 1 {
+		t.Errorf("坏号应只打一次，实得 %d", calls["Bearer at-bad"])
+	}
+	if calls["Bearer at-good"] != 0 {
+		t.Errorf("默认不得跨号重试（防连坐），good 被调用 %d 次", calls["Bearer at-good"])
+	}
+	st, _ := p.Status("bad")
+	if !st.Disabled {
+		t.Fatalf("11140 账号应被禁用: %+v", st)
+	}
+	wantReason := "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction"
+	if st.DisabledReason != wantReason {
+		t.Errorf("disabled_reason=%q want %q", st.DisabledReason, wantReason)
+	}
+}
+
+// 需要旧行为（跨号重试）时可显式开启 RestrictedRotateMax>0。
+func TestChatAccountFault11140RotatesWhenConfigured(t *testing.T) {
+	calls := map[string]int{}
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls[authz]++
+		if authz == "Bearer at-bad" {
+			return 403, `{"code":11140,"msg":"request illegal"}`, false
+		}
+		return 200, sseOK, true
+	})
+	p := testPoolWith(
+		&auth.Auth{UID: "bad", AccessToken: "at-bad", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "good", AccessToken: "at-good", ExpiresAt: 9999999999},
+	)
+	p.SetCredits("bad", 2000)
+	p.SetCredits("good", 1000)
+	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: 90 * time.Second, RestrictedRotateMax: 1})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != 200 {
-		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
+		t.Fatalf("显式开启后应轮转到 good 成功，code=%d body=%s", rec.Code, rec.Body)
 	}
-	// 坏号只打一次即被禁用并轮换到 good：无无限重试。
 	if calls["Bearer at-bad"] != 1 || calls["Bearer at-good"] != 1 {
-		t.Errorf("calls=%v want bad/good 各 1 次", calls)
+		t.Errorf("calls=%v want 各 1 次", calls)
 	}
-	st, _ := p.Status("bad")
-	if !st.Disabled {
-		t.Fatalf("bad 应被硬禁用（11140 封禁需重登，不可自愈）: %+v", st)
+}
+
+// 【P1-7】整池波次暂停：同域窗口内 ≥RestrictionWaveMin 个账号被限制 ⇒ 该域整体停手，
+// 后续请求不再向该域发起上游调用（避免把剩余账号也拖下水）。
+func TestRestrictionWavePausesRealm(t *testing.T) {
+	calls := 0
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls++
+		return 403, `{"code":11140,"msg":"request illegal"}`, false
+	})
+	p := testPoolWith(
+		&auth.Auth{UID: "a1", AccessToken: "at-1", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "a2", AccessToken: "at-2", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "a3", AccessToken: "at-3", ExpiresAt: 9999999999},
+	)
+	for _, u := range []string{"a1", "a2", "a3"} {
+		p.SetCredits(u, 1000)
 	}
-	wantReason := "account banned by upstream (11140 request illegal), re-login required"
-	if st.DisabledReason != wantReason {
-		t.Errorf("disabled_reason=%q want %q", st.DisabledReason, wantReason)
+	// 允许连坐 2 次：首请求会打到 2 个号 → 触发波次暂停。
+	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: 90 * time.Second, RestrictedRotateMax: 2})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	first := calls
+	if first < 2 {
+		t.Fatalf("首请求应至少打到 2 个号才触发波次，实得 %d", first)
 	}
-	if st.Cooling {
-		t.Errorf("硬禁用由 disabled 表达，不应叠加冷却状态: %+v", st)
+	if !h.realmPaused("cn") {
+		t.Fatalf("同域 2 个号被限制后应暂停该域，calls=%d", first)
 	}
 
-	// 禁用生效：后续请求（冷却早过期）也不再选中 bad（不再刷上游风控）。
-	before := calls["Bearer at-bad"]
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
-	if rec2.Code != 200 {
-		t.Fatalf("second code=%d body=%s", rec2.Code, rec2.Body)
+	if calls != first {
+		t.Errorf("波次暂停期间不应再打上游：before=%d after=%d", first, calls)
 	}
-	if calls["Bearer at-bad"] != before {
-		t.Errorf("禁用的账号不应被选中: calls=%v", calls)
+	if rec2.Code == 200 {
+		t.Errorf("暂停期间应返回错误而不是 200")
 	}
 }
 
@@ -743,7 +802,7 @@ func TestChatAccountFault14017Rotates(t *testing.T) {
 // 分类下按 msg 分野——"request illegal"(11140) → 硬禁用；"trial"(14017) → 软冷却不禁用。
 // 端到端接线由上方 TestChatAccountFault11140Disables / TestChatAccountFault14017Rotates 覆盖。
 func TestApplyErrorPolicyAccountFaultSplit(t *testing.T) {
-	const why11140 = "account banned by upstream (11140 request illegal), re-login required"
+	const why11140 = "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction"
 
 	t.Run("11140 request illegal disables", func(t *testing.T) {
 		p := pool.New("")
@@ -3116,7 +3175,11 @@ func TestKeylessPanelWritesRequireCustomHeader(t *testing.T) {
 		{"对话 GET-无 body", "GET", "/v1/models", "", "", false},
 	}
 	for _, c := range cases {
-		req := httptest.NewRequest(c.method, c.path, strings.NewReader("x"))
+		// 仅本用例：给请求加短超时，避免"不受面板门约束"的那条真打到上游并挂死
+		// （QA 复现：该请求会打到 copilot.tencent.com，本机 fake-IP 198.18.0.20 的 TLS 永不回包）。
+		// 语义不变：仍然要求"不被 keyless 门拒绝"，只是不等外网。
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader("x")).WithContext(ctx)
 		if c.authz != "" {
 			req.Header.Set("Authorization", c.authz)
 		}
@@ -3125,6 +3188,7 @@ func TestKeylessPanelWritesRequireCustomHeader(t *testing.T) {
 		}
 		rec := httptest.NewRecorder()
 		newH().ServeHTTP(rec, req)
+		cancel()
 		if c.blocked && rec.Code != http.StatusForbidden {
 			t.Errorf("%s: code=%d want 403", c.name, rec.Code)
 		}

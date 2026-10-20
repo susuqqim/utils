@@ -676,6 +676,48 @@ func toggleAutostart() {
 
 // ---- tooltip 刷新 ----
 
+// Notify 弹出 Windows 通知（Shell_NotifyIcon 的 NIF_INFO 气泡）。
+// 可跨 goroutine 调用：只修改 nid 的**副本**，不动托盘线程共享的 nid。
+// 用于"发现新版本"提示（2026-10 更新通路重设计）——全程在进程内，不弹控制台。
+func Notify(title, text string) error {
+	if !Supported() {
+		return ErrUnsupported
+	}
+	stateMu.Lock()
+	hwnd := hwndTray
+	stateMu.Unlock()
+	if hwnd == 0 {
+		return ErrUnsupported
+	}
+	const (
+		nifInfo  = 0x00000010 // NIF_INFO
+		niifInfo = 0x00000001 // NIIF_INFO
+	)
+	n := notifyIconDataW{
+		CbSize:      uint32(unsafe.Sizeof(notifyIconDataW{})),
+		HWnd:        hwnd,
+		UID:         trayIconID,
+		UFlags:      nifInfo,
+		DwInfoFlags: niifInfo,
+	}
+	copyTitle(&n, title)
+	copyInfo(&n, text)
+	if r, _, e := procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&n))); r == 0 {
+		return fmt.Errorf("Shell_NotifyIcon(NIM_MODIFY/NIF_INFO) 失败: %v", e)
+	}
+	return nil
+}
+
+// copyTitle/copyInfo 把字符串截断后写入固定长度 UTF-16 数组（含结尾 NUL）。
+func copyTitle(n *notifyIconDataW, s string) {
+	u := utf16.Encode([]rune(TruncateUTF16(s, 63)))
+	copy(n.SzInfoTitle[:], u)
+}
+func copyInfo(n *notifyIconDataW, s string) {
+	u := utf16.Encode([]rune(TruncateUTF16(s, 255)))
+	copy(n.SzInfo[:], u)
+}
+
 func applyTooltip() {
 	stateMu.Lock()
 	h := hwndTray

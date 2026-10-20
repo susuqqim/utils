@@ -308,8 +308,8 @@ func (p *Pool) ModelBlocked(model, realm string) ModelBlockStatus {
 	// （审查 D 的 P1-3：原实现取任意第一条 Reason 的前缀）。
 	notFoundAll := true
 	for _, e := range p.byUID {
-		if e.disabled || e.paused {
-			// 禁用/暂停选号的号都不在候选里，不能作为"还有号能服务"的证据
+		if e.blocked(p.now()) {
+			// 禁用/暂停选号（含未到期的 11140 限制）都不在候选里，不能作为"还有号能服务"的证据
 			// （审查 B 的 P1-2：暂停号会让 Blocked 恒 false）。
 			continue
 		}

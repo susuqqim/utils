@@ -79,7 +79,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	// 0. 强制指定路由账户（Pinned / Forced Routing）：重启后重置，最高优先级直通
 	targetUID := p.pinnedUIDLocked(realm)
 	if targetUID != "" {
-		if pe, ok := p.byUID[targetUID]; ok && realmOK(pe) && (tried == nil || !tried[targetUID]) && !pe.disabled {
+		if pe, ok := p.byUID[targetUID]; ok && realmOK(pe) && (tried == nil || !tried[targetUID]) && !pe.blocked(now) {
 			if healthyOf(pe) && !p.inFlightFull(pe) {
 				pe.lastUsed = now
 				return pe.a
@@ -449,8 +449,8 @@ func (p *Pool) pickEarliestExpiryLocked(tried map[string]bool, now time.Time, re
 		if realm != "" && e.a.Realm() != realm {
 			continue // 域过滤：池内跨 realm 的冷却账号不参与本 realm 兜底
 		}
-		if e.disabled || e.paused {
-			continue // 禁用/暂停选号的账号永不参与兜底
+		if e.blocked(now) {
+			continue // 禁用/暂停选号（含未到期的 11140 限制）永不参与兜底
 		}
 		if p.floorBlockedForRealmModel(e, model, realm, now) {
 			continue // 兜底是最后一道选号路径：保底在它之前挡不住就等于没挡（上游 b98fb4f）

@@ -29,6 +29,9 @@ rem happens while the gateway is ALREADY up. The old behavior silently launched 
 rem instance which lost the port race and exited -> the user saw "nothing happens".
 rem Health probe via curl (bundled with Windows 10+); non-zero = not running -> normal start.
 :do_start
+rem [install-ux] 首次使用：若 api_key 仍是占位符，引导设置（已设置则静默返回）
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup-key.ps1" -Config "%USERPROFILE%\.workbuddy2api\config.json"
+
 curl.exe -s -m 2 --noproxy "*" -o nul http://127.0.0.1:%PORT%/healthz >nul 2>&1
 if not errorlevel 1 (
   echo Already running. Opening panel: http://127.0.0.1:%PORT%/panel/

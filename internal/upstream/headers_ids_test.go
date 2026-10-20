@@ -68,8 +68,10 @@ func TestChatHeadersConversationNoConvID(t *testing.T) {
 	c := &Client{}
 	c.ChatHeaders(req, a, "", ChatMeta{ConversationRequestID: "convreq-1"})
 
-	if got := req.Header.Get("X-Conversation-ID"); got != "" {
-		t.Errorf("X-Conversation-ID = %q want empty (client didn't send one)", got)
+	// 2026-10-20（上游 PR #233）：国际端点收紧通道校验后，缺 X-Conversation-ID 会 400/11128，
+	// 故客户端没带时也必须发一个回退值（32 位 hex），不再是"空则不发"。
+	if got := req.Header.Get("X-Conversation-ID"); !hex32Re.MatchString(got) {
+		t.Errorf("X-Conversation-ID = %q want 32 hex fallback (client didn't send one)", got)
 	}
 	if got := req.Header.Get("X-Conversation-Request-ID"); got != "convreq-1" {
 		t.Errorf("X-Conversation-Request-ID = %q want convreq-1", got)
@@ -97,8 +99,8 @@ func TestChatHeadersConversationEmptyMeta(t *testing.T) {
 	if got := req.Header.Get("X-B3-TraceId"); got != convReqID {
 		t.Errorf("X-B3-TraceId = %q want %q", got, convReqID)
 	}
-	if got := req.Header.Get("X-Conversation-ID"); got != "" {
-		t.Errorf("X-Conversation-ID = %q want empty", got)
+	if got := req.Header.Get("X-Conversation-ID"); !hex32Re.MatchString(got) {
+		t.Errorf("X-Conversation-ID = %q want 32 hex fallback", got)
 	}
 }
 

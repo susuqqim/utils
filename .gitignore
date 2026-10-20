@@ -1,21 +1,50 @@
-# 凭证与运行态（绝不入库）
-config.json
-.apikey
-.apikey.*
+# Auth & secrets
 auths/*
 !auths/.gitkeep
 data/*
 !data/.gitkeep
-state.json
-usage.json
-last_request.json
-# 构建产物
-*.exe
-*.msi
-*.tar
-*.tar.gz
+*.key
+.apikey
+.apikey*
+*.pem
+*.env
+.env
+.env.*
+
+# Binaries (anchored to repo root only — bare "login"/"credit" would also ignore cmd/login/, cmd/credit/)
+/login
+/credit
+/wb2api
+signin_bin
+
+# Config with secrets (use config.example.json)
+config.json
+
+# Build artifacts
+*.tmp
+*.bak
+*.log
+logs/
 __pycache__/
-*.pyc
-# 编辑器/系统
-.DS_Store
-Thumbs.db
+
+# Backups (contains auth tokens)
+backups/
+
+# IDE
+.idea/
+.vscode/
+LOOP.md
+PLAN.md
+SPEC.md
+docs/
+
+# 设计/计划文档（交付包必需的说明文档需显式放行）
+*.md
+!README.md
+!README-upstream.md
+!AGENT.md
+# 例外（2026-10-03，第十三轮审计 F1）：internal/ 下的 .md 可能是 **go:embed 的构建输入**
+# （如 internal/prompt/defaultprompt.md）—— 被忽略的后果不是"少个文档"，而是
+# `git archive HEAD` 出来的干净副本 **go build 直接失败**。门禁：
+#   bash workbuddy2api/scripts/check-tracked-build-inputs.sh
+!internal/**/*.md

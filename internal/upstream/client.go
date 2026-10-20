@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -39,6 +40,7 @@ const (
 	ErrContentBlocked                // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
 	ErrBadParams                     // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 不罚账号，仍轮转
 	ErrAccountFault                  // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
+	ErrChannelRefused                // 11128 request illegal 通道校验失败（上游认为请求不是官方客户端发的）→ 不罚账号
 	ErrModelBlocked                  // 11102「该后端无此模型」→ (账号,模型) 负缓存避让，切模型/切账号
 	ErrWafBlock                      // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避
 	ErrPromptTooLong                 // 11115「prompt is too long」→ 请求级错误（上下文超限）：不罚号、不轮转，立即透传原文
@@ -64,6 +66,8 @@ func (k ErrKind) String() string {
 		return "bad_params"
 	case ErrAccountFault:
 		return "account_fault"
+	case ErrChannelRefused:
+		return "channel_refused"
 	case ErrModelBlocked:
 		return "model_blocked"
 	case ErrWafBlock:
@@ -244,9 +248,40 @@ var modelMissingMarkers = []string{
 }
 
 var accountFaultMarkers = []string{
-	"request illegal",
 	"trial not activated",
 	"trial version is not yet activated",
+}
+
+// accountRestrictedMsg 是 WorkBuddy 11140 账号限制的正文关键词。
+//
+// 背景（2026-10-20，上游 PR #233）：WorkBuddy 的 **11128 通道校验失败**与
+// **11140 账号被限制**，msg 都是 "request illegal"，文案完全一致：
+//   - 11128：`displayTips` 明确说「可能不是官方客户端发出」→ 账号本身健康；
+//   - 11140：账号存在异常行为被限制 → 需要申诉。
+//
+// 旧实现按裸文案判定，会把一次通道校验失败误判成封禁并硬禁用健康账号。
+const accountRestrictedMsg = "request illegal"
+
+// IsAccountRestricted 报告 body 是否为账号级限制（11140 "request illegal"）。
+// 必须 **code + 文案双条件**：
+//   - 只看文案："request illegal" 也出现在 11128 通道校验失败里（健康账号）；
+//   - 只看 code：11140 也承载模型级限流文案（"The model provider is rate-limiting
+//     requests."），那种场景必须保持 ErrSoftRate。
+func IsAccountRestricted(body string) bool {
+	if !strings.Contains(strings.ToLower(body), accountRestrictedMsg) {
+		return false
+	}
+	return hasBusinessCode(body, "11140")
+}
+
+// isChannelRefused 报告 body 是否为通道校验失败（11128 "request illegal"）。
+// 11128 还承载内容审核变体（"blocked by security policy"，归 ErrContentBlocked），
+// 故同样必须 code + 文案双条件，不能按 code 一刀切。
+func isChannelRefused(body string) bool {
+	if !strings.Contains(strings.ToLower(body), accountRestrictedMsg) {
+		return false
+	}
+	return hasBusinessCode(body, "11128")
 }
 
 // softRateResetLoc 上游 429 6004 文案中的重置时间固定按 UTC+8 解释（上游文案如此，
@@ -419,6 +454,16 @@ func Classify(status int, body string) ErrKind {
 			return ErrSessionDead
 		}
 	}
+	// WorkBuddy 11128 / 11140 的 msg 同为 "request illegal"，必须按业务码分流：
+	//   - 11128 = 通道校验失败（displayTips：可能不是官方客户端发送）→ 账号健康，不罚号；
+	//   - 11140 = 账号被上游限制（异常行为/风控）→ account_fault，由 handler 禁用。
+	// 两者都要求 code + 文案双条件，避免 11140 的模型级限流变体被误判。
+	if isChannelRefused(body) {
+		return ErrChannelRefused
+	}
+	if IsAccountRestricted(body) {
+		return ErrAccountFault
+	}
 	for _, m := range accountFaultMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {
 			return ErrAccountFault
@@ -500,10 +545,35 @@ func Classify(status int, body string) ErrKind {
 		if containsAnyMarker(lower, body, modelMissingMarkers) {
 			return ErrModelBlocked
 		}
+		// 403 + HTML 拦截页 = 上游 WAF（Cloudflare/APISIX 的 "WAF Block Page"）。
+		// 必须早于 ErrClient：ErrClient 会直接透传给客户端且不冷却，实测表现为
+		// "国际版时好时坏、偶发 403 client"。归 ErrWafBlock ⇒ 软冷却 + 抖动退避。
+		if status == http.StatusForbidden && looksLikeHTMLBlockPage(body) {
+			return ErrWafBlock
+		}
 		return ErrClient
 	}
 	// HTTP 200 但业务 code 非 0 且含余额关键词的情况已被上面 hardMarkers 捕获。
 	return ErrNone
+}
+
+// looksLikeHTMLBlockPage 判断响应体是否为 WAF/网关的 HTML 拦截页（非业务信封）。
+// 只看开头一小段：拦截页体积可能很大，且业务 JSON 绝不会以 <!DOCTYPE/<html 开头。
+func looksLikeHTMLBlockPage(body string) bool {
+	head := strings.TrimSpace(body)
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	lower := strings.ToLower(head)
+	if strings.HasPrefix(lower, "<!doctype") || strings.HasPrefix(lower, "<html") {
+		return true
+	}
+	for _, m := range []string{"waf block page", "web application firewall", "access denied", "request rejected"} {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // containsAnyMarker 文案族匹配：小写 body 与原文 body 双通道（中文 marker 不受 ToLower 影响，
@@ -630,12 +700,22 @@ type Client struct {
 
 // New 生产默认值。配置连接池减少 TLS 握手。
 func New() *Client {
+	// 2026-10 硬化（QA 发现：本机 DNS 把域名解析到 fake-IP 时 TCP 能连但 TLS 永不回包，
+	// 旧 Transport 没有 TLSHandshakeTimeout/DialContext 超时 ⇒ 请求永久阻塞）。
+	// 同时补 ProxyFromEnvironment：生产/测试环境常通过 HTTPS_PROXY 出网。
+	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
 	tr := &http.Transport{
+		Proxy:       http.ProxyFromEnvironment,
+		DialContext: dialer.DialContext,
+		// TLS 握手上限：卡在握手上是最常见的"连得上不回包"形态。
+		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
 		// 聊天 SSE 首字节前硬上限（对短 RPC 无实际影响：其总时长 120s 更先到期）。
 		ResponseHeaderTimeout: 120 * time.Second,
+		// 100-continue 等待上限，避免服务端不回 100 时干等（Go 默认 1s，显式声明便于审计）。
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 	c := &Client{
 		HTTP:          &http.Client{Timeout: 120 * time.Second, Transport: tr},

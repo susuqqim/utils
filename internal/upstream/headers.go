@@ -323,9 +323,14 @@ func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 		convReqID = session.NewMessageID()
 	}
 	messageID := session.NewMessageID()
-	if meta.ConversationID != "" {
-		req.Header.Set("X-Conversation-ID", meta.ConversationID)
+	// 会话 ID 必须**始终发送**：国际端点收紧通道校验后，缺 X-Conversation-ID 的
+	// 请求会直接 400 / 11128（conversation id missing）。入站没带时生成 32 位 hex
+	// 作为本次请求的回退值（同一次出站的所有头族复用同一个，不跨请求复用）。
+	convID := meta.ConversationID
+	if convID == "" {
+		convID = session.NewMessageID()
 	}
+	req.Header.Set("X-Conversation-ID", convID)
 	req.Header.Set("X-Conversation-Request-ID", convReqID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)
 	req.Header.Set("X-Request-ID", messageID)

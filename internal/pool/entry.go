@@ -188,7 +188,10 @@ type entry struct {
 	disabled          bool
 	paused            bool // 暂停选号：落盘持久化（state.json），跨重启不丢
 	reason            string
-	lastUsed          time.Time // 最近被选中时刻（防并发撞号）
+	// restrictedUntil 上游风控限制（11140 账号画像风控）的到期时间。
+	// 非零 ⇒ 到期后自动解除禁用（见 blocked()）；手工禁用/session 死亡保持零值，永不自动恢复。
+	restrictedUntil time.Time
+	lastUsed        time.Time // 最近被选中时刻（防并发撞号）
 	// breakerUntil / fails / retryCount 为熔断器运行态（不持久化）。
 	// fails 是唯一的"连续失败"计数器：任何错误喂入，达到 breakerThreshold 触发熔断（指数退避），
 	// 跨入口累计，成功/熔断/统一复活时清零（保留 retryCount 驱动退避指数）。
@@ -240,9 +243,35 @@ func (e *entry) modelCostOf(model string, now time.Time) (modelCostEntry, bool) 
 	return mc, true
 }
 
+// blocked 报告账号是否被禁用/暂停挡在选号之外。
+//
+// 【P1-7】disabled 分两类：
+//   - 永久禁用（手工禁用 / session 死亡）：restrictedUntil 为零值 ⇒ 永远不可选；
+//   - 上游风控限制（11140 账号画像风控）：restrictedUntil 非空 ⇒ 到期后**自动视为可用**，
+//     因为上游的限制会自行解除（社区实证：数小时~次日恢复）。到期后的清理由
+//     sweepRestrictionsLocked 兜底完成，这里只保证"不再挡路"。
+func (e *entry) blocked(now time.Time) bool {
+	if e.paused {
+		return true
+	}
+	if e.disabled {
+		if e.restrictedUntil.IsZero() || now.Before(e.restrictedUntil) {
+			return true
+		}
+		return false // 限制已到期，视为可用
+	}
+	return false
+}
+
+// restrictionExpired 报告上游风控限制（11140）是否已到期 —— 只对 disabled 有意义。
+// 手工禁用/session 死亡的 restrictedUntil 为零，永远返回 false。
+func (e *entry) restrictionExpired(now time.Time) bool {
+	return e.disabled && !e.restrictedUntil.IsZero() && !now.Before(e.restrictedUntil)
+}
+
 // healthy 报告账号当前是否可选（未禁用、未处于任一冷却/熔断期）。
 func (e *entry) healthy(now time.Time) bool {
-	if e.disabled || e.paused {
+	if e.blocked(now) {
 		return false
 	}
 	if !e.until.IsZero() && now.Before(e.until) {
@@ -368,11 +397,13 @@ type stateAccount struct {
 	Packages         []PackageItem `json:"packages,omitempty"`
 	LastResourceSync time.Time     `json:"last_resource_sync,omitempty"`
 	Disabled         bool          `json:"disabled"`
-	Paused           bool          `json:"paused,omitempty"`
-	Reason           string        `json:"reason,omitempty"`
-	Until            time.Time     `json:"until,omitempty"`
-	CoolKind         CoolKind      `json:"cool_kind"`
-	SuccessCount     int64         `json:"success_count,omitempty"`
+	// RestrictedUntil 上游风控限制（11140）到期时间：非零 ⇒ 到期自动解除（见 entry.blocked）。
+	RestrictedUntil time.Time `json:"restricted_until,omitempty"`
+	Paused          bool      `json:"paused,omitempty"`
+	Reason          string    `json:"reason,omitempty"`
+	Until           time.Time `json:"until,omitempty"`
+	CoolKind        CoolKind  `json:"cool_kind"`
+	SuccessCount    int64     `json:"success_count,omitempty"`
 	// err_total 累计错误计数。旧版 err_count（连续错误）仍可读：加载时映射到 err_total，
 	// 仅作一次性迁移，不再回写 err_count。
 	ErrTotal    int64     `json:"err_total,omitempty"`
