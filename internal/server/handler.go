@@ -1140,6 +1140,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 让它"越失败越健康"——正是本次要根除的"先记账后确认"。
 			switch {
 			case st.status == http.StatusOK:
+				// 上游以 error 帧报错（6004 限流 / 审核 / 限流变体）时，HTTP 头早已是 200，
+				// 上面的 applyErrorPolicy 已按帧内容罚过账号；此处**绝不能**再记成功——
+				// NoteSuccess 会清软冷却，等于把刚写下的惩罚抹掉（2026-10-20 实测回归：
+				// TestChatStreamErrorFrameDisposesAccount 失败，冷却被"成功"清空）。
+				if errFrame != "" {
+					log.Printf("[server] chat_stream uid=%s: upstream error frame present → skip success accounting (penalty kept)",
+						logfmt.UID8(acct.UID))
+					break
+				}
 				h.noteUpstreamSuccess(acct.UID, stickyKey)
 			case clientCanceled:
 				// 499：不奖也不罚，但**必须清连续软限流计数**——否则 softStreak 只增不减，
@@ -1321,7 +1330,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		st.status = http.StatusBadRequest
 	case sawModelBlocked:
 		if h.modelUnavailableFinal(bareModel, realm, tried) {
-			msg := "model unavailable on the reached backend(s): 若这是国际版模型，请用 global:<模型名> 前缀；可用模型清单见 /v1/models"
+			msg := "model unavailable on the reached backend(s): 若这是国际版模型，请用 global:<模型名> 前缀；" +
+				"若是 11158（该用户类型无权使用此模型），说明当前账号档位不支持该模型，请换模型；可用清单见 /v1/models"
 			if lastErr != nil {
 				msg += "; upstream: " + lastErr.Error()
 			}

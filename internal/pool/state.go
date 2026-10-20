@@ -566,6 +566,17 @@ func (p *Pool) NoteSuccess(uid string) {
 		e.breakerUntil = time.Time{}
 		e.softStreak = 0
 		e.sessionDeadFails = 0
+		// 成功即证明账号可用：清掉**软冷却**（429）。
+		//
+		// 2026-10-20 实测缺陷：此前只清 fails/熔断/softStreak，**不清 until** ⇒ 账号一次 429
+		// 后进入软冷却，之后每个请求都走「全冷却兜底」路径（fallback_earliest_expiry），
+		// 既刷 WARN 噪音，又让调度失去「该号健康」的信息；冷却期间明明每次都 200 成功。
+		// 只清 CoolSoft：CoolHard（余额耗尽，调了必 402）必须留到签到恢复。
+		if e.coolKind == CoolSoft && !e.until.IsZero() {
+			e.until = time.Time{}
+			e.coolKind = CoolNone
+			e.reason = ""
+		}
 		p.dirty.Store(true)
 	}
 }

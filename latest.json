@@ -1,9 +1,9 @@
 {
-  "version": "1.11.11",
-  "sha256": "063c134de8ddcdaaa654b3b9d747fded3229f517a86ab5867be2978907f3cd0a",
-  "size": 10064384,
+  "version": "1.11.12",
+  "sha256": "4164b09edfa01b2fba3335f4320295b758ced8223347f8ae18adfd4934721651",
+  "size": 10065408,
   "urls": [
-    "https://github.com/susuqqim/utils/releases/download/v1.11.11/wb2api-core.exe"
+    "https://github.com/susuqqim/utils/releases/download/v1.11.12/wb2api-core.exe"
   ],
-  "generated": "2026-10-20T03:35:14"
+  "generated": "2026-10-20T04:15:45"
 }

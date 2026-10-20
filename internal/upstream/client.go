@@ -360,6 +360,30 @@ var transientModelBlockMarkers = []string{
 	"temporarily unavailable", "服务繁忙", "暂无可用渠道", "临时不可用",
 }
 
+// modelLevelCodes 上游的**模型级**业务码：问题在「这个模型对这个账号/用户类型不可用」，
+// 不在账号健康、也不在网关。
+//
+// 2026-10-20 对照 ardeyouxipianyi/workbuddy2api-hub（#499 / #505）：
+//   - 11102 model not found on this backend（该后端无此模型）
+//   - 11134 model provider temporarily unavailable（模型提供方暂不可用）
+//   - 11150 model not available
+//   - 11158 model not allowed for user type（**新**：免费/低档账号无权使用该模型）
+//   - 11129 invalid function call parameters（模型相关的参数拒绝）
+//
+// 旧实现只认 11102（且只在 4xx 分支），于是 11158 这类码会落到 ErrServer ⇒ **喂熔断、罚整个账号**，
+// 而实际上换模型就好、账号完全健康（用户可能连续被"熔断"掉一池号）。
+var modelLevelCodes = []string{"11102", "11134", "11150", "11158", "11129"}
+
+// hasModelLevelCode 报告 body 是否带模型级业务码。
+func hasModelLevelCode(body string) bool {
+	for _, c := range modelLevelCodes {
+		if hasBusinessCode(body, c) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsTransientModelBlock 报告一次 ErrModelBlocked 是否属于**路由/容量类**（可能自愈）。
 // 显式的 11102 业务码优先（有码就是确定性"没有这个模型"），只有纯文案且命中路由族才算瞬时。
 //
@@ -503,8 +527,10 @@ func Classify(status int, body string) ErrKind {
 	}
 	// 11102「该后端无此模型」业务码：语义唯一（模型维度的不可用），与状态码无关，
 	// 故最先判定。hasBusinessCode 是真 JSON 遍历，空格/引号形态无关。
-	if status >= 400 && status < 500 && hasBusinessCode(body, "11102") {
-		return ErrModelBlocked // 仅 4xx：5xx+11102 仍归 ErrServer（喂熔断），保守正确
+	if status >= 400 && status < 500 && hasModelLevelCode(body) {
+		// 模型级业务码（11102/11134/11150/11158/11129）：换模型或换号即可，账号本身健康，
+		// 归 ErrModelBlocked ⇒ 落 (账号,模型) 负缓存，不熔断整池。
+		return ErrModelBlocked
 	}
 	if status == http.StatusNotFound {
 		// 未知模型的真实响应形态未定（可能 400 带码、也可能 404 带文案）：404 命中
@@ -516,6 +542,11 @@ func Classify(status int, body string) ErrKind {
 		return ErrNotFound
 	}
 	if status >= 500 {
+		// 模型级业务码即使在 5xx 也不罚账号：hub #499 实测 11134 以 HTTP 500 送达，
+		// 旧口径会让"某个模型挂了"把整个账号熔断掉。
+		if hasModelLevelCode(body) {
+			return ErrModelBlocked
+		}
 		return ErrServer
 	}
 	// 内容策略拦截（HTTP 400 + 审核文案）：判在通用 ErrClient 之前。

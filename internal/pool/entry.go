@@ -15,6 +15,9 @@ type CoolKind int
 const (
 	CoolHard CoolKind = iota // 余额不足 → 冷却到次日 04:00（等签到恢复）
 	CoolSoft                 // 429 → 短冷却
+	// CoolNone 无冷却。**必须追加在末尾**：state.json 落盘的是 CoolKind 数值，
+	// 把新值插到中间会让历史文件里的 0/1 变成另一种语义。
+	CoolNone
 )
 
 func (k CoolKind) String() string {
@@ -23,6 +26,8 @@ func (k CoolKind) String() string {
 		return "hard_credit"
 	case CoolSoft:
 		return "soft_rate"
+	case CoolNone:
+		return "none"
 	}
 	return "unknown"
 }
