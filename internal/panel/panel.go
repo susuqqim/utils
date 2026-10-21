@@ -103,6 +103,12 @@ type Panel struct {
 	modelsMu    sync.Mutex
 	modelsCache map[string]modelsCacheEntry
 
+	// packagesMu/packagesCache 积分构成页缓存：该接口按账号逐个打上游计费端点
+	//（5 个号 ≈ 1.0s），而页面只是只读展示；5 分钟内复用，避免每切页就烧一轮上游。
+	packagesMu    sync.Mutex
+	packagesCache map[string]any
+	packagesAt    time.Time
+
 	// queueMu/queueCache 排队（繁忙度）缓存：/v2/chat/queue/status 是**按模型**的，
 	// 一次全量查询 = 模型数条上游请求，必须长缓存 + 并发节流，否则刷新一次就打出几十条。
 	queueMu    sync.Mutex
@@ -854,6 +860,16 @@ func (p *Panel) usageSave(w http.ResponseWriter, r *http.Request) {
 // 逐个账号向上游查（并发有上限，避免瞬时打满上游限流），失败只在对应账号上
 // 标 error，不影响其它账号——一个号 token 失效不该让整页空白。
 func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
+	// D1：5 分钟缓存（按账号打上游计费端点，实测 ~1.0s / 5 次请求）。
+	// ?refresh=1 强制穿透；返回 cached/age_seconds 供前端提示。
+	now := time.Now()
+	if !wantRefresh(r) {
+		if payload, ok := p.cachedPackages(now); ok {
+			writeJSON(w, http.StatusOK, payload)
+			return
+		}
+	}
+
 	accts := p.cfg.Pool.List()
 	type row struct {
 		UID      string                   `json:"uid"`
@@ -899,7 +915,20 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 
 	// 余额降序：多的在前，便于和少的对比。
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Remain > out[j].Remain })
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+	payload := map[string]any{"accounts": out, "cached": false}
+	// 只有全部账号都取到数据才缓存：把一次部分失败的结果固化 5 分钟会让页面一直显示缺数据。
+	allOK := true
+	for _, it := range out {
+		if it.Error != "" {
+			allOK = false
+			break
+		}
+	}
+	if allOK {
+		cachePayload := map[string]any{"accounts": out, "cached": true}
+		p.storePackages(cachePayload, now)
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

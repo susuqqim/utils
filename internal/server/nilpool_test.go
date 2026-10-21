@@ -19,7 +19,7 @@ func TestNilPoolFailsCleanly(t *testing.T) {
 	for _, tc := range []struct {
 		method, path, body string
 	}{
-		{"POST", "/v1/chat/completions", `{"model":"glm-5.2","messages":[]}`},
+		{"POST", "/v1/chat/completions", `{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`},
 		{"GET", "/v1/models", ""},
 		{"GET", "/status", ""},
 		{"GET", "/healthz", ""},

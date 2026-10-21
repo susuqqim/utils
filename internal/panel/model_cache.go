@@ -21,6 +21,14 @@ const (
 	// queueTTL 排队状态缓存时长。状态变化快但页面展示不需要秒级精度，
 	// 2 分钟能挡住连续切页/多标签页的重复查询。
 	queueTTL = 2 * time.Minute
+	// packagesTTL 积分构成页（CreditPackages）缓存时长。
+	//
+	// 这个接口是**按账号逐个打上游计费端点**的（5 个号并发 3 → 实测稳定 ~1.0s），
+	// 而面板上它只是一个"看看积分包何时到期"的只读展示页。此前每切一次页就打 5 次
+	// 上游、等 1 秒——既慢又白烧请求（与刚修的模型目录缓存是同一类问题，当时漏了它）。
+	// 积分包到期以天计，5 分钟足够新。
+	packagesTTL = 5 * time.Minute
+
 	// queueProbeConcurrency 查排队时的并发上限：串行太慢，全并发又太像扫描，取 4。
 	queueProbeConcurrency = 4
 	// maxQueueProbes 单次「查繁忙」最多查多少个模型。
@@ -35,6 +43,12 @@ const (
 type modelsCacheEntry struct {
 	entries []map[string]any
 	errs    []string
+	fetched time.Time
+}
+
+// packagesCacheEntry 积分构成页的缓存条目。
+type packagesCacheEntry struct {
+	payload map[string]any
 	fetched time.Time
 }
 
@@ -87,6 +101,24 @@ func (p *Panel) storeQueue(realm string, byModel map[string]*upstream.QueueStatu
 		p.queueCache = make(map[string]queueCacheEntry)
 	}
 	p.queueCache[realm] = queueCacheEntry{byModel: byModel, fetched: now}
+}
+
+// cachedPackages 读积分构成缓存。
+func (p *Panel) cachedPackages(now time.Time) (map[string]any, bool) {
+	p.packagesMu.Lock()
+	defer p.packagesMu.Unlock()
+	if p.packagesCache == nil || now.Sub(p.packagesAt) >= packagesTTL {
+		return nil, false
+	}
+	return p.packagesCache, true
+}
+
+// storePackages 写积分构成缓存。
+func (p *Panel) storePackages(payload map[string]any, now time.Time) {
+	p.packagesMu.Lock()
+	defer p.packagesMu.Unlock()
+	p.packagesCache = payload
+	p.packagesAt = now
 }
 
 // wantRefresh 报告请求是否要求穿透缓存（?refresh=1）。

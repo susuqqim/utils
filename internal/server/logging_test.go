@@ -270,7 +270,7 @@ func TestChatLogsStreamRow(t *testing.T) {
 	})
 	out := captureStdout(t, func() {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[]}`))
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {
 			t.Fatalf("code=%d", rec.Code)
@@ -297,7 +297,7 @@ func TestChatLogsSyncRowTTFBDash(t *testing.T) {
 	})
 	out := captureStdout(t, func() {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {
 			t.Fatalf("code=%d", rec.Code)
@@ -319,7 +319,7 @@ func TestChatLogsErrorRow(t *testing.T) {
 	h := NewHandler(Config{Pool: p, Upstream: up})
 	out := captureStdout(t, func() {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
 		h.ServeHTTP(rec, req)
 		if rec.Code != 503 {
 			t.Fatalf("code=%d body=%s", rec.Code, rec.Body)

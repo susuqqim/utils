@@ -43,7 +43,7 @@ func TestStreamUsageNoCreditNotRecorded(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
-			strings.NewReader(`{"model":"m","messages":[],"stream":true}`)))
+			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}`)))
 		if rec.Code != 200 {
 			t.Fatalf("请求失败: code=%d", rec.Code)
 		}
@@ -78,7 +78,7 @@ func TestStreamUsageCreditZeroRecorded(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
-			strings.NewReader(`{"model":"m2","messages":[],"stream":true}`)))
+			strings.NewReader(`{"model":"m2","messages":[{"role":"user","content":"hi"}],"stream":true}`)))
 		if rec.Code != 200 {
 			t.Fatalf("code=%d", rec.Code)
 		}
@@ -122,7 +122,7 @@ func TestChatRecordsModelCost(t *testing.T) {
 	for _, uid := range []string{"u1", "u2"} {
 		_ = uid
 		req := httptest.NewRequest("POST", "/v1/chat/completions",
-			strings.NewReader(`{"model":"hy3","messages":[],"stream":true}`))
+			strings.NewReader(`{"model":"hy3","messages":[{"role":"user","content":"hi"}],"stream":true}`))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {
@@ -134,7 +134,7 @@ func TestChatRecordsModelCost(t *testing.T) {
 	// 后续请求应稳定走免费的 u2（成本分层压过积分因子）。
 	for i := 0; i < 10; i++ {
 		req := httptest.NewRequest("POST", "/v1/chat/completions",
-			strings.NewReader(`{"model":"hy3","messages":[],"stream":true}`))
+			strings.NewReader(`{"model":"hy3","messages":[{"role":"user","content":"hi"}],"stream":true}`))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {

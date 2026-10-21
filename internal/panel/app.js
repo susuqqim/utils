@@ -899,6 +899,32 @@ if ($('btnShutdown')) {
 }
 
 /* ── 轮询 ─────────────────────────────────────────────────────────── */
+/* 【U1，2026-10-21】全局异常兜底。
+   此前前端没有任何 window.onerror / unhandledrejection 处理 ⇒ 任何未捕获异常都
+   **静默失败**，用户看到的现象是"点了没反应""页面卡住"，控制台里才有堆栈。
+   这里统一抓成一条右上角提示（toast 限流，避免刷屏），至少让用户知道出错了。 */
+(function () {
+  var reported = 0;
+  var lastAt = 0;
+  function report(kind, msg) {
+    var now = Date.now();
+    if (now - lastAt < 4000) { reported++; return; }   // 4 秒内合并，避免连环异常刷屏
+    lastAt = now;
+    var extra = reported > 0 ? '（另有 ' + reported + ' 条同类异常已合并）' : '';
+    reported = 0;
+    try { toast(kind + '：' + String(msg).slice(0, 160) + extra, 'err'); } catch (e) { /* toast 自身不可用时放弃 */ }
+  }
+  window.addEventListener('error', function (e) {
+    var m = (e && (e.message || (e.error && e.error.message))) || '未知脚本错误';
+    report('页面脚本出错', m);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e && e.reason;
+    var m = (r && (r.message || r)) || '未知异步错误';
+    report('请求/异步操作失败', m);
+  });
+})();
+
 function refreshVisible() {
   if (view === 'accounts') loadOverview(true);
   else if (view === 'logs') loadLogs();

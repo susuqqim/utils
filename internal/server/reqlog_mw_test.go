@@ -25,7 +25,7 @@ func TestReqLogMiddlewareCapturesAndSanitizes(t *testing.T) {
 	h := ReqLogMiddleware(next, &ReqLogSink{Ring: ring})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("X-Forwarded-For", "203.0.113.77, 10.0.0.1")
 	req.Header.Set("User-Agent", "agent/1.0 "+strings.Repeat("x", 200))
 	h.ServeHTTP(rec, req)

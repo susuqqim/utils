@@ -27,8 +27,12 @@ func TestVerifyBearer(t *testing.T) {
 		{"错误 key", "sk-abc123", "Bearer sk-wrong", false},
 		{"缺 Authorization 头", "sk-abc123", "", false},
 		{"缺 Bearer 前缀", "sk-abc123", "sk-abc123", false},
-		{"前缀大小写不符（规范要求精确）", "sk-abc123", "bearer sk-abc123", false},
-		{"多余空格", "sk-abc123", "Bearer  sk-abc123", false},
+		// 【2026-10-21 修正】原断言写 false，理由是"规范要求精确"——**那个理由是错的**。
+		// RFC 7235 §2.1："The scheme name is case-insensitive"。不少 SDK / HTTP 库
+		// 默认就发小写 `bearer`，判 401 会让用户觉得"密钥明明对却认证失败"。
+		// 方案名后多空格（`Bearer  key`）同样是常见形态，一并容忍。
+		{"前缀大小写不同（RFC 7235 方案名不区分大小写）", "sk-abc123", "bearer sk-abc123", true},
+		{"方案名后多余空格", "sk-abc123", "Bearer  sk-abc123", true},
 		{"前缀相同但内容短", "sk-abc123", "Bearer sk-abc12", false},
 		{"前缀相同但内容长", "sk-abc123", "Bearer sk-abc1234", false},
 		{"key 恰好是前缀", "sk-abc", "Bearer sk-abcdef", false},

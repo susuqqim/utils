@@ -17,6 +17,9 @@ import (
 	"time"
 )
 
+// updateGhReleaseManifest GitHub Release 的 latest 清单地址（会再套代理前缀）。
+const updateGhReleaseManifest = "https://github.com/susuqqim/utils/releases/latest/download/latest.json"
+
 // updateManifest 是 latest.json 的结构（与 scripts/update/*.ps1 一致）。
 type updateManifest struct {
 	Version string   `json:"version"`
@@ -38,10 +41,19 @@ type updateCheckResult struct {
 }
 
 var (
+	// B10：清单源必须与 scripts/update/wb2api-update.ps1 **同序同集合**。
+	// 此前 Go 侧只有 3 个直连源、没有代理前缀 ⇒ 裸连 GitHub 不通时面板"检查更新"
+	// 失败，而同一台机器上的 updater 却能成功（实测：curl raw 失败 / updater OK）。
 	updateManifestSources = []string{
 		"https://raw.githubusercontent.com/susuqqim/utils/main/latest.json",
 		"https://cdn.jsdelivr.net/gh/susuqqim/utils@main/latest.json",
-		"https://github.com/susuqqim/utils/releases/latest/download/latest.json",
+		updateGhReleaseManifest,
+	}
+	// 与 PowerShell 侧相同的三个代理前缀（pp 前缀 + 完整 release URL）
+	updateManifestProxies = []string{
+		"https://ghproxy.net/",
+		"https://gh-proxy.com/",
+		"https://mirror.ghproxy.com/",
 	}
 	updateHTTPClient = &http.Client{Timeout: 8 * time.Second}
 
@@ -89,8 +101,13 @@ func versionNewer(a, b string) bool {
 
 // fetchUpdateManifest 依次尝试各源；全部失败返回错误。
 func fetchUpdateManifest(ctx context.Context) (updateManifest, string, error) {
+	// 直连源 + 代理源（代理只对 GitHub Release URL 有意义）
+	sources := append([]string{}, updateManifestSources...)
+	for _, px := range updateManifestProxies {
+		sources = append(sources, px+updateGhReleaseManifest)
+	}
 	var lastErr error
-	for _, u := range updateManifestSources {
+	for _, u := range sources {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			lastErr = err
@@ -123,7 +140,10 @@ func fetchUpdateManifest(ctx context.Context) (updateManifest, string, error) {
 // CheckUpdateFor 供非面板入口（托盘启动自检）使用：不依赖 Panel 实例。
 func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheckResult {
 	updateCacheMu.Lock()
-	if !force && time.Since(updateCacheAt) < 5*time.Minute && updateCache.CheckedAt != "" {
+	// B9：缓存必须绑定 current 版本。旧实现只看时间窗 ⇒ 刚更新完的 5 分钟内，
+	// 面板仍用旧 current 的结果显示"可更新"（用户看到提示却已经是最新）。
+	if !force && time.Since(updateCacheAt) < 5*time.Minute &&
+		updateCache.CheckedAt != "" && updateCache.Current == current {
 		cached := updateCache
 		updateCacheMu.Unlock()
 		return cached

@@ -15,8 +15,14 @@ import (
 	"time"
 )
 
-// bearerPrefix 认证方案前缀（大小写敏感，与 HTTP 规范及既有实现一致）。
-const bearerPrefix = "Bearer "
+// bearerPrefix 认证方案前缀。
+//
+// 【F3，2026-10-21】原注释写"大小写敏感，与 HTTP 规范一致"——**是错的**。
+// RFC 7235 §2.1 明确："The scheme name is case-insensitive"。
+// 实测 `bearer <key>`（全小写，不少 SDK/HTTP 库的默认写法）会被判 401，
+// 用户侧表现为"密钥明明对却认证失败"。改为大小写不敏感，并容忍方案名后多个空格
+// （`Bearer  key` 也是常见形态）。
+const bearerPrefix = "bearer"
 
 // VerifyBearer 校验请求头是否携带正确的 Bearer 密钥。
 //
@@ -29,13 +35,25 @@ func VerifyBearer(r *http.Request, key string) bool {
 	if key == "" {
 		return true
 	}
-	authz := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authz, bearerPrefix) {
-		// 缺头/方案不对：仍走一次摘要比较，保持耗时形状一致。
+	authz := strings.TrimSpace(r.Header.Get("Authorization"))
+	// 按第一个空格切出 scheme 与凭据；scheme 大小写不敏感。
+	sp := strings.IndexByte(authz, ' ')
+	if sp <= 0 {
+		// 缺头 / 只有 scheme 无凭据：仍走一次摘要比较，保持耗时形状一致。
 		subtle.ConstantTimeCompare(digest(""), digest(key))
 		return false
 	}
-	tok := authz[len(bearerPrefix):]
+	scheme := strings.ToLower(strings.TrimSpace(authz[:sp]))
+	if scheme != bearerPrefix {
+		subtle.ConstantTimeCompare(digest(""), digest(key))
+		return false
+	}
+	// 容忍 scheme 后多个空格（`Bearer  key`），只裁掉前导空白，不动凭据内部。
+	tok := strings.TrimLeft(authz[sp:], " ")
+	if tok == "" {
+		subtle.ConstantTimeCompare(digest(""), digest(key))
+		return false
+	}
 	return subtle.ConstantTimeCompare(digest(tok), digest(key)) == 1
 }
 

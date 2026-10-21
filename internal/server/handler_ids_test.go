@@ -45,7 +45,7 @@ func TestChatRotationReusesConversationRequestID(t *testing.T) {
 	)
 	h := NewHandler(Config{Pool: p, Upstream: up})
 	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"glm-5.2","messages":[],"metadata":{"conversation_id":"conv-1"}}`))
+		strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"metadata":{"conversation_id":"conv-1"}}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 503 {
@@ -123,7 +123,7 @@ func TestChatConversationIDPassthrough(t *testing.T) {
 	h := NewHandler(Config{Pool: p, Upstream: up})
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[],"conversationId":"conv-camel"}`))
+		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"hi"}],"conversationId":"conv-camel"}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -157,7 +157,7 @@ func TestChatConversationRequestIDInboundPassthrough(t *testing.T) {
 	h := NewHandler(Config{Pool: p, Upstream: up})
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+		strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("X-Conversation-Request-ID", "client-req-1")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -204,7 +204,7 @@ func TestChatAGlobalPathAndFallbackReuseConvReqID(t *testing.T) {
 	p := testPoolWith(a)
 	h := NewHandler(Config{Pool: p, Upstream: up})
 	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"global:glm-5.2","messages":[]}`))
+		strings.NewReader(`{"model":"global:glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {

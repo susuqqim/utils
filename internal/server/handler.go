@@ -636,10 +636,45 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		dumpReqDump(v, body)
 	}
 	var peek struct {
-		Stream bool   `json:"stream"`
-		Model  string `json:"model"`
+		Stream   bool            `json:"stream"`
+		Model    string          `json:"model"`
+		Messages json.RawMessage `json:"messages"`
 	}
-	_ = json.Unmarshal(body, &peek)
+	// 【F1，2026-10-21】本地最小校验：把"注定被上游拒绝"的请求在本地 400 掉。
+	//
+	// 此前这里是 `_ = json.Unmarshal(body, &peek)` —— 解析错误被**静默忽略**，于是
+	// 缺 messages / 空 messages / 缺 model 的请求会**真的发到上游**（实测 1.2~1.8s），
+	// 拿回 11101/11133 再转成 invalid_request_error。每一次都是白烧一次上游调用，
+	// 既浪费账号配额，又在风控眼里多出一条异常请求（本项目最在意的风险）。
+	//
+	// 校验只覆盖 OpenAI 规范**明确要求**的字段，不做更严的语义检查，
+	// 以免误伤上游实际能容忍的灵活形态。
+	if err := json.Unmarshal(body, &peek); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_json",
+			"请求体不是合法 JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(peek.Model) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "missing_model",
+			"缺少 model 字段：请在请求体里指定模型名（可用清单见 /v1/models）")
+		return
+	}
+	if len(peek.Messages) == 0 || string(peek.Messages) == "null" {
+		writeOpenAIError(w, http.StatusBadRequest, "missing_messages",
+			"缺少 messages 字段：OpenAI Chat Completions 要求 messages 为非空数组")
+		return
+	}
+	var msgs []json.RawMessage
+	if err := json.Unmarshal(peek.Messages, &msgs); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_messages",
+			"messages 必须是数组: "+err.Error())
+		return
+	}
+	if len(msgs) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "empty_messages",
+			"messages 不能为空数组：至少需要一条消息")
+		return
+	}
 
 	// 工具名名单：上游在没有 tools 的请求里会把工具调用吐成原生标记文本（见
 	// upstream/dsml.go），修复层用它做严格判定。名单来自「本请求声明的 tools」与
@@ -1801,6 +1836,17 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 		typ = "authentication_error"
 	case http.StatusTooManyRequests:
 		typ = "rate_limit_error"
+	}
+	// 【D2，2026-10-21】503 统一带 Retry-After。
+	//
+	// 503 在本网关的语义是"暂时没有可用账号（冷却/熔断/在途占满/模型暂不可用）"，
+	// 即**可以重试**；但此前不带任何退避提示，客户端（OpenAI SDK / zcode / 各类 Agent）
+	// 只能盲目重试——实测 10 并发时 8 个 503，若无退避会立刻打出第二轮、第三轮，
+	// 把"暂时不可用"放大成持续上游压力（也正是风控最敏感的那种密集调用）。
+	// 5 秒是本项目软冷却基数（600s）与单轮上游耗时之间的折中：既能明显降低重试频次，
+	// 又不会让客户端等太久。
+	if status == http.StatusServiceUnavailable {
+		w.Header().Set("Retry-After", "5")
 	}
 	writeJSON(w, status, map[string]any{
 		"error": map[string]any{
