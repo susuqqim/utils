@@ -1116,9 +1116,17 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             </div>
             <div class="hr"></div>
             <div class="grid2">
+              <label class="fld"><span class="lb">出站身份预设</span>
+                <select name="identity">
+                  <option value="">默认 — WorkBuddy 桌面端（UA 与头组自洽，推荐）</option>
+                  <option value="wb">wb — WorkBuddy 桌面端（完整 X-IDE 头组）</option>
+                  <option value="vscode">vscode — CodeBuddy IDE 扩展/宿主</option>
+                  <option value="cli">cli — 桌面端内置 CLI</option>
+                </select>
+                <span class="hint">上游 2026-10 收紧渠道校验（11128）后可换一套官方身份重试；需重启</span></label>
               <label class="fld"><span class="lb">出站 User-Agent</span>
-                <input name="user_agent" placeholder="留空 = CLI/2.63.2 CodeBuddy/2.63.2">
-                <span class="hint">影响官网积分记录「使用端」显示；需重启</span></label>
+                <input name="user_agent" placeholder="留空 = 跟随身份预设">
+                <span class="hint">显式填写会覆盖身份预设的 UA；影响官网积分记录「使用端」显示；需重启</span></label>
             </div>
             <div class="hr"></div>
             <div class="grid2">

@@ -377,28 +377,42 @@ func validTraceID(s string) bool {
 // 取值跟随 ClientName（X-IDE-Name/Type/Product = WorkBuddy），X-IDE-Version = 客户端
 // 版本段（config client_version 可覆盖）。与官方 banner 头组完全同形。
 func (c *Client) injectAttribution(req *http.Request) {
-	// 身份预设：整套身份头一次写全（UA 由 userAgent 配套给出），优先于 ClientName 分支。
+	// 优先级（2026-10-21 上游收紧渠道校验后重排）：
+	//   ① identity 预设（显式选择 wb / vscode / cli）；
+	//   ② client_name 显式覆盖（历史配置项，用户自己填的品牌）；
+	//   ③ **默认 = 与默认 UA 自洽的 WB 形态**。
+	//
+	// ③ 为什么必须自洽：默认 UA 已经是 `WorkBuddy/5.5.4 …`（自称桌面端），
+	// 而旧默认头组只发 `X-Product: SaaS` 且不发任何 X-IDE-* ⇒ "UA 说自己是
+	// WorkBuddy 桌面端、头却说自己是 SaaS、且没有 IDE 标识"这种**混搭形态**
+	// 正是上游 11128 渠道校验的可疑触发点。默认改成全套 WorkBuddy 后，
+	// 未配置任何身份相关键的部署也发得出**同一个官方客户端**的完整形态。
 	if preset, ok := c.identityPresetFor(); ok {
-		for k, v := range preset.headers {
-			req.Header.Set(k, v)
-		}
-		if v := preset.headers["X-IDE-Version"]; v == "" {
-			// wb / cli 预设：X-IDE-Version 跟随客户端版本段（与官方头组同形）。
-			if req.Header.Get("X-IDE-Name") != "" {
-				req.Header.Set("X-IDE-Version", c.clientVersion())
-			}
-		}
+		c.applyIdentityPreset(req, preset)
 		return
 	}
-	if c == nil || c.ClientName == "" {
-		req.Header.Set("X-Product", "SaaS")
+	if c != nil && c.ClientName != "" {
+		req.Header.Set("X-Agent-Purpose", "conversation")
+		req.Header.Set("X-IDE-Name", c.ClientName)
+		req.Header.Set("X-IDE-Type", c.ClientName)
+		req.Header.Set("X-IDE-Version", c.clientVersion())
+		req.Header.Set("X-Product", c.ClientName)
 		return
 	}
-	req.Header.Set("X-Agent-Purpose", "conversation")
-	req.Header.Set("X-IDE-Name", c.ClientName)
-	req.Header.Set("X-IDE-Type", c.ClientName)
-	req.Header.Set("X-IDE-Version", c.clientVersion())
-	req.Header.Set("X-Product", c.ClientName)
+	c.applyIdentityPreset(req, identityPresets[IdentityWB])
+}
+
+// applyIdentityPreset 写入一套自洽的身份头。
+//
+// X-IDE-Version：预设未显式给出时，跟随客户端的版本段（wb / cli 预设），
+// 与官方头组的形状一致（X-IDE-Version == UA 里的版本号）。
+func (c *Client) applyIdentityPreset(req *http.Request, preset identityPreset) {
+	for k, v := range preset.headers {
+		req.Header.Set(k, v)
+	}
+	if preset.headers["X-IDE-Version"] == "" && req.Header.Get("X-IDE-Name") != "" {
+		req.Header.Set("X-IDE-Version", c.clientVersion())
+	}
 }
 
 // injectClientIP 在 PassthroughIP 开启时把 clientIP 参数透传给上游。

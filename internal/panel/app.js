@@ -530,6 +530,7 @@ const CFG_MAP = {
   ttl: ['session_sticky', 'ttl'],
   timeout_seconds: ['upstream', 'timeout_seconds'], header_timeout_seconds: ['upstream', 'header_timeout_seconds'],
   idle_timeout_seconds: ['upstream', 'idle_timeout_seconds'], user_agent: ['upstream', 'user_agent'],
+  identity: ['upstream', 'identity'],
   prompt_mode: ['prompt', 'mode'], prompt_file: ['prompt', 'file'],
   sanitize_blacklist_fingerprints: ['features', 'sanitize_blacklist_fingerprints'],
   ui_tray: ['ui', 'tray'],
@@ -571,6 +572,10 @@ function collectConfig() {
     let v;
     if (el.type === 'checkbox') v = el.checked;
     else if (el.type === 'number') { v = el.value.trim() === '' ? undefined : Number(el.value); }
+    /* select 的**空串是合法值**（例如出站身份预设 value="" = 恢复默认）：
+       不能像文本框那样把空串当"未填"跳过，否则用户从 vscode 改回默认时
+       永远发不出 ""，配置就卡在旧值上。 */
+    else if (el.tagName === 'SELECT') v = el.value;
     else {
       const raw = el.value.trim();
       if (raw === '') v = undefined;

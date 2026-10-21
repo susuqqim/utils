@@ -60,16 +60,22 @@ func TestIdentityWB(t *testing.T) {
 	}
 }
 
-// 默认（不配 identity）：完全保持历史行为 —— X-Product: SaaS、不发 X-IDE-*。
-func TestIdentityDefaultKeepsLegacyBehavior(t *testing.T) {
+// 默认（不配 identity / client_name）必须与默认 UA **自洽**，而不是旧版的 SaaS 混搭。
+func TestIdentityDefaultIsCoherent(t *testing.T) {
 	cl := New()
 	req := httptest.NewRequest(http.MethodPost, "/v2/chat/completions", nil)
 	cl.injectAttribution(req)
-	if req.Header.Get("X-Product") != "SaaS" {
-		t.Errorf("默认应为 SaaS，实得 %q", req.Header.Get("X-Product"))
+	if got := req.Header.Get("X-Product"); got != "WorkBuddy" {
+		t.Errorf("默认 X-Product 应为 WorkBuddy（与 UA 自洽），实得 %q", got)
 	}
-	if req.Header.Get("X-IDE-Name") != "" {
-		t.Error("默认不应发 X-IDE-Name")
+	if got := req.Header.Get("X-IDE-Name"); got != "WorkBuddy" {
+		t.Errorf("默认应发 X-IDE-Name=WorkBuddy，实得 %q", got)
+	}
+	// UA 里的版本号与 X-IDE-Version 必须同值（官方头组形状）
+	ua := cl.userAgent(nil)
+	ver := req.Header.Get("X-IDE-Version")
+	if ver == "" || !strings.Contains(ua, ver) {
+		t.Errorf("X-IDE-Version=%q 必须出现在 UA %q 中", ver, ua)
 	}
 }
 

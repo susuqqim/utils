@@ -40,6 +40,9 @@ func TestPanelNewConfigFieldsWired(t *testing.T) {
 		{"credit_floor", "pool", "credit_floor"},
 		{"read_timeout", "server", "read_timeout"},
 		{"include_disabled_in_tasks", "schedule", "include_disabled_in_tasks"},
+		// 出站身份预设（2026-10-21 上游 11128 渠道校验收紧）：三处必须齐全，
+		// 否则面板里选了也不生效（静默回落默认）。
+		{"identity", "upstream", "identity"},
 	}
 	for _, c := range cases {
 		// ① CFG_MAP 必须有映射，且**section 与末段都要对**（审查 E 的 T5：只查"有映射"

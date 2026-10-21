@@ -84,26 +84,36 @@ func TestAttributionIncludesIDEVersion(t *testing.T) {
 	if got := h2.Get("X-IDE-Version"); got != "5.5.4" {
 		t.Errorf("X-IDE-Version = %q want %q (default)", got, "5.5.4")
 	}
-	// ClientName 空时 X-IDE-Version 不设（保持旧行为：只有 X-Product=SaaS）。
+	// ClientName 空（且未配 identity）时走**默认自洽 WB 形态**：X-IDE-Version 跟随
+	// 默认客户端版本段，不再像旧行为那样只发 X-Product=SaaS（UA 与头组不一致正是
+	// 2026-10-21 上游 11128 渠道校验的可疑触发点）。
 	c3 := &Client{}
 	h3 := chatHeadersReq(t, c3, a, "")
-	if got := h3.Get("X-IDE-Version"); got != "" {
-		t.Errorf("X-IDE-Version = %q want empty (client_name unset)", got)
+	if got := h3.Get("X-IDE-Version"); got != "5.5.4" {
+		t.Errorf("X-IDE-Version = %q want %q (coherent default)", got, "5.5.4")
 	}
 }
 
-// TestProductDefaultSaaS ClientName 空（缺省）时 X-Product=SaaS 且不设 X-IDE-*（旧行为）。
-func TestProductDefaultSaaS(t *testing.T) {
+// TestProductDefaultCoherentWB 未配置 client_name / identity 时，**默认必须自洽**：
+// 默认 UA 是 `WorkBuddy/<ver> …`（自称桌面端），头组就必须同样是 WorkBuddy 全套。
+//
+// 旧行为是 X-Product=SaaS 且不发 X-IDE-*，与 UA 矛盾 —— "UA 说自己是 WorkBuddy 桌面端、
+// 头里说自己是 SaaS、且没有任何 IDE 标识"这种混搭形态正是上游 11128 渠道校验的
+// 可疑触发点（2026-10-21 收紧后社区大面积报错）。
+func TestProductDefaultCoherentWB(t *testing.T) {
 	a := &auth.Auth{AccessToken: "at", UID: "u1"}
-	c := &Client{} // ClientName 空
+	c := &Client{} // 未配 ClientName / Identity
 	h := chatHeadersReq(t, c, a, "")
-	if got := h.Get("X-Product"); got != "SaaS" {
-		t.Errorf("X-Product = %q want %q", got, "SaaS")
+	if got := h.Get("X-Product"); got != "WorkBuddy" {
+		t.Errorf("X-Product = %q want %q (must agree with default UA)", got, "WorkBuddy")
 	}
-	// X-IDE-Name/Type 不应被设置。
-	for _, hdr := range []string{"X-IDE-Name", "X-IDE-Type", "X-Agent-Purpose"} {
-		if got := h.Get(hdr); got != "" {
-			t.Errorf("%s = %q want empty (not set in SaaS default)", hdr, got)
+	for _, tc := range []struct{ hdr, want string }{
+		{"X-IDE-Name", "WorkBuddy"},
+		{"X-IDE-Type", "WorkBuddy"},
+		{"X-Agent-Purpose", "conversation"},
+	} {
+		if got := h.Get(tc.hdr); got != tc.want {
+			t.Errorf("%s = %q want %q (coherent default)", tc.hdr, got, tc.want)
 		}
 	}
 }
