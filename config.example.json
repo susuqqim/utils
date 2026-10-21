@@ -55,6 +55,7 @@
   },
   "upstream": {
     "timeout_seconds": 600,
+    "dial_timeout_seconds": 20,
     "header_timeout_seconds": 300,
     "idle_timeout_seconds": 600,
     "user_agent": "",

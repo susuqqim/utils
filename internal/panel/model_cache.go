@@ -121,6 +121,54 @@ func (p *Panel) storePackages(payload map[string]any, now time.Time) {
 	p.packagesAt = now
 }
 
+// staleModels 取**过期但仍在**的模型目录（不看 TTL）。
+//
+// 【2026-10-21 生产实测事故】只有 TTL 判定时，缓存一过期就必须同步打上游；
+// 上游 TLS 握手一旦抖动（实测 `net/http: TLS handshake timeout`），
+// 面板「模型与档位」页会**卡死 30 秒以上**（客户端直接超时），而其它接口都在毫秒级。
+// 只读展示页不该被上游抖动拖死 ⇒ 过期后先回旧数据，后台异步刷新。
+func (p *Panel) staleModels(key string) (modelsCacheEntry, bool) {
+	p.modelsMu.Lock()
+	defer p.modelsMu.Unlock()
+	e, ok := p.modelsCache[key]
+	if !ok {
+		return modelsCacheEntry{}, false
+	}
+	return e, true
+}
+
+// stalePackages 取过期的积分构成数据（语义同 staleModels）。
+func (p *Panel) stalePackages() (map[string]any, bool) {
+	p.packagesMu.Lock()
+	defer p.packagesMu.Unlock()
+	if p.packagesCache == nil {
+		return nil, false
+	}
+	return p.packagesCache, true
+}
+
+// beginRefresh 尝试取得某个 key 的后台刷新权（同一时刻只允许一个在跑）。
+// 返回 false 表示已有刷新在途，调用方直接复用旧数据即可，不必再排一个 goroutine。
+func (p *Panel) beginRefresh(key string) bool {
+	p.refreshingMu.Lock()
+	defer p.refreshingMu.Unlock()
+	if p.refreshing == nil {
+		p.refreshing = map[string]bool{}
+	}
+	if p.refreshing[key] {
+		return false
+	}
+	p.refreshing[key] = true
+	return true
+}
+
+// endRefresh 释放刷新权。
+func (p *Panel) endRefresh(key string) {
+	p.refreshingMu.Lock()
+	defer p.refreshingMu.Unlock()
+	delete(p.refreshing, key)
+}
+
 // wantRefresh 报告请求是否要求穿透缓存（?refresh=1）。
 func wantRefresh(r *http.Request) bool {
 	v := r.URL.Query().Get("refresh")

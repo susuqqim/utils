@@ -664,6 +664,11 @@ type apiEnvelope struct {
 type Client struct {
 	HTTP *http.Client
 
+	// DialTimeout 出站 TCP 建连上限（0 = defaultDialTimeout）。main.go 按
+	// config upstream.dial_timeout_seconds 注入；只作用于**新建连接**，
+	// 不影响已建连后的流式读取（首字节/流中空闲各有自己的闸）。
+	DialTimeout time.Duration
+
 	// v3Cache 最近一次**两路 UA 都成功**的 /v3/config 目录：单路失败时与它取并集，
 	// 避免"部分并集"被上层当成功写进 10 分钟缓存而让 /v1/models 缩水（见 fetchV3Models）。
 	// 读写在 v3Mu 内（Client 以指针传递，无按值复制）。
@@ -777,11 +782,22 @@ type Client struct {
 }
 
 // New 生产默认值。配置连接池减少 TLS 握手。
+// defaultDialTimeout 出站 TCP 建连默认上限（见 New 里的放宽说明）。
+const defaultDialTimeout = 20 * time.Second
+
 func New() *Client {
 	// 2026-10 硬化（QA 发现：本机 DNS 把域名解析到 fake-IP 时 TCP 能连但 TLS 永不回包，
 	// 旧 Transport 没有 TLSHandshakeTimeout/DialContext 超时 ⇒ 请求永久阻塞）。
 	// 同时补 ProxyFromEnvironment：生产/测试环境常通过 HTTPS_PROXY 出网。
-	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
+	// 【2026-10-21 放宽建连上限】原先硬编码 8s：生产实测「10 次探测 4 次 12s 都连不上、
+	// 成功的也有 7.8s 才建连」的网络下，8s 会把本来能成功的请求提前判死，网关自己返回
+	// 503 upstream_timeout（日志特征 `dial tcp <ip>:443: i/o timeout`），客户端只看到
+	// "上游超时"却不知道其实是本地建连太急。
+	// 默认放宽到 20s，并可通过 config upstream.dial_timeout_seconds 覆盖：
+	//   - 该值只管**建连**（TCP handshake），不影响已建连后的流式读取
+	//     （首字节由 HeaderTimeout/ResponseHeaderTimeout 管，流中空闲由 IdleTimeout 管）；
+	//   - 放宽只在"网络半死"时多等一会儿，正常情况下建连是毫秒级，无额外成本。
+	dialer := &net.Dialer{Timeout: defaultDialTimeout, KeepAlive: 30 * time.Second}
 	tr := &http.Transport{
 		Proxy:       http.ProxyFromEnvironment,
 		DialContext: dialer.DialContext,

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,7 +39,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.16-panel"
+const appVersion = "1.11.17-panel"
 
 // restartHidden 为真时（托盘模式），重启子进程用 CREATE_NO_WINDOW 拉起，
 // 避免新控制台闪窗；仅 Windows 生效（见 restart_windows.go）。
@@ -264,10 +265,23 @@ func main() {
 	p.SetModelRateOf(func(realm, model string) string { return up.ModelRate(realm, model) })
 	// 短 RPC 总时长上限（refresh/checkin/balance/FetchModels），语义不变。
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	// TCP 建连上限：<=0 保持 upstream.New() 的默认（20s）。
+	//
+	// 独立于 HeaderTimeout：Header 管"连上了等首字节"，这里管"连不上"。
+	// 2026-10-21 实测网络下 4/10 次 12s 都建连失败，此前硬编码 8s 会把
+	// 本可成功的请求提前判死（日志 `dial tcp <ip>:443: i/o timeout` → 503）。
+	if sec := cfg.Upstream.DialTimeoutSeconds; sec > 0 {
+		up.DialTimeout = time.Duration(sec) * time.Second
+	}
 	// 聊天 SSE 首字节前（响应头）上限：cfg 已 normalize（缺省回落 timeout_seconds）。
 	up.HeaderTimeout = time.Duration(cfg.Upstream.HeaderTimeoutSeconds) * time.Second
 	if tr, ok := up.ChatHTTP.Transport.(*http.Transport); ok {
 		tr.ResponseHeaderTimeout = up.HeaderTimeout
+		// Dial 建连上限：0 = 保持 upstream.New() 的默认（20s）。
+		if up.DialTimeout > 0 {
+			d := &net.Dialer{Timeout: up.DialTimeout, KeepAlive: 30 * time.Second}
+			tr.DialContext = d.DialContext
+		}
 	}
 	// 聊天 SSE 流中空闲上限（S3 空闲监控读取）。
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second

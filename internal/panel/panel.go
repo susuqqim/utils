@@ -103,6 +103,10 @@ type Panel struct {
 	modelsMu    sync.Mutex
 	modelsCache map[string]modelsCacheEntry
 
+	// refreshingMu/refreshing 后台刷新权（按 key），防同一份数据被并发重复刷新。
+	refreshingMu sync.Mutex
+	refreshing   map[string]bool
+
 	// packagesMu/packagesCache 积分构成页缓存：该接口按账号逐个打上游计费端点
 	//（5 个号 ≈ 1.0s），而页面只是只读展示；5 分钟内复用，避免每切页就烧一轮上游。
 	packagesMu    sync.Mutex
@@ -412,6 +416,13 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 	// 缓存命中直接返回（10 分钟内不重复打上游）；?refresh=1 穿透。
 	// 每次未命中要打 2~3 次 /v3/config（CN 双 UA + global），面板切页就刷一轮，
 	// 既慢又把网关伪装成扫描器（2026-10-21）。
+	//
+	// 【stale-while-revalidate，2026-10-21 生产事故后补】
+	// 只有 TTL 判定时，缓存一过期就必须**同步**打上游；上游 TLS 握手一抖动
+	// （实测 `net/http: TLS handshake timeout`），这一页会卡死 30s+，客户端直接超时，
+	// 而同机的 overview/packages 仍是毫秒级 —— 一个只读展示页不该被上游抖动拖死。
+	// 现在：新鲜 ⇒ 直接回；过期但有旧数据 ⇒ **立刻回旧数据**（stale=true）并后台刷新；
+	// 完全没缓存 ⇒ 才同步拉（首次必然如此）。
 	if !wantRefresh(r) {
 		if e, ok := p.cachedModels("all", now); ok {
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -421,10 +432,37 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if e, ok := p.staleModels("all"); ok && len(e.entries) > 0 {
+			p.refreshModelsAsync()
+			warns := append([]string{}, e.errs...)
+			warns = append(warns, "目录已过期，正在后台刷新（当前展示上次结果）")
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok": true, "models": e.entries, "cached": true, "stale": true,
+				"age_seconds": int(now.Sub(e.fetched).Seconds()),
+				"warnings":    warns,
+			})
+			return
+		}
 	}
 
-	out := make([]map[string]any, 0)
-	var fetchErrs []string
+	out, fetchErrs := p.fetchModels()
+
+	if len(out) == 0 {
+		if len(fetchErrs) > 0 {
+			writeErr(w, http.StatusBadGateway, "fetch models: "+strings.Join(fetchErrs, "; "))
+			return
+		}
+		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
+		return
+	}
+	p.storeModels("all", out, fetchErrs, now)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": out, "cached": false, "warnings": fetchErrs})
+}
+
+// fetchModels 从上游拉取双域模型目录（不写缓存、不写响应）。
+// 抽出来的目的：同步路径（首次无缓存）与后台刷新路径共用同一份探测逻辑。
+func (p *Panel) fetchModels() (out []map[string]any, errs []string) {
+	out = make([]map[string]any, 0)
 
 	// CN 域：有可用 CN 账号才查（此前无条件 Pool.Pick()+FetchModels——选中 global
 	// 账号时打 CN 端点必然失败，混合池表现为偶发 502，纯 global 池必炸）。
@@ -432,7 +470,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 		if acct := p.cfg.Pool.AuthByUID(uids[0]); acct != nil {
 			infos, err := p.cfg.Upstream.FetchModels(acct)
 			if err != nil {
-				fetchErrs = append(fetchErrs, "cn: "+err.Error())
+				errs = append(errs, "cn: "+err.Error())
 			} else {
 				for _, mi := range infos {
 					out = append(out, panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP))
@@ -448,7 +486,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 			if acct := p.cfg.Pool.AuthByUID(uids[0]); acct != nil {
 				infos := p.cfg.Upstream.FetchGlobalModelInfos(acct)
 				if len(infos) == 0 {
-					fetchErrs = append(fetchErrs, "global: 上游未返回可用模型")
+					errs = append(errs, "global: 上游未返回可用模型")
 				} else {
 					efforts, defaults := p.cfg.Upstream.GlobalEffortSnapshot()
 					for _, mi := range infos {
@@ -458,17 +496,22 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	return out, errs
+}
 
-	if len(out) == 0 {
-		if len(fetchErrs) > 0 {
-			writeErr(w, http.StatusBadGateway, "fetch models: "+strings.Join(fetchErrs, "; "))
-			return
-		}
-		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
+// refreshModelsAsync 后台刷新模型目录（stale 返回路径专用）。
+// 用 beginRefresh 去重：同一时刻只允许一个刷新在跑，避免多个面板请求同时打上游。
+func (p *Panel) refreshModelsAsync() {
+	if !p.beginRefresh("models") {
 		return
 	}
-	p.storeModels("all", out, fetchErrs, now)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": out, "cached": false, "warnings": fetchErrs})
+	gosafe.Do("panel models background refresh", func() {
+		defer p.endRefresh("models")
+		out, errs := p.fetchModels()
+		if len(out) > 0 {
+			p.storeModels("all", out, errs, time.Now())
+		}
+	})
 }
 
 // panelModelEntry 构造单个模型条目（两域共用）：id 带 realm 前缀（调用值即显示值），
@@ -868,6 +911,23 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, payload)
 			return
 		}
+		// 同 models：过期但有旧数据 ⇒ 先回旧数据 + 后台刷新，不把用户卡在上游抖动上
+		//（这个接口要按账号逐个打计费端点，抖动时更容易卡）。
+		if payload, ok := p.stalePackages(); ok {
+			if p.beginRefresh("packages") {
+				gosafe.Do("panel packages background refresh", func() {
+					defer p.endRefresh("packages")
+					p.fetchAndStorePackages()
+				})
+			}
+			out := map[string]any{}
+			for k, v := range payload {
+				out[k] = v
+			}
+			out["stale"] = true
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
 	}
 
 	accts := p.cfg.Pool.List()
@@ -929,6 +989,57 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 		p.storePackages(cachePayload, now)
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// fetchAndStorePackages 后台刷新积分构成（stale 返回路径专用）。
+// 只在全部账号都取到数据时才落缓存，语义与同步路径一致。
+func (p *Panel) fetchAndStorePackages() {
+	accts := p.cfg.Pool.List()
+	type row struct {
+		UID      string                   `json:"uid"`
+		Nickname string                   `json:"nickname"`
+		Realm    string                   `json:"realm"`
+		Remain   int64                    `json:"remain"`
+		Size     int64                    `json:"size"`
+		Packages []upstream.CreditPackage `json:"packages"`
+		Error    string                   `json:"error,omitempty"`
+	}
+	out := make([]row, len(accts))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 3)
+	for i, st := range accts {
+		wg.Add(1)
+		go gosafe.Do("panel credit packages bg", func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			it := row{UID: st.UID, Nickname: st.Nickname, Realm: st.Realm}
+			a := p.cfg.Pool.AuthByUID(st.UID)
+			if a == nil {
+				it.Error = "account not loaded"
+				out[i] = it
+				return
+			}
+			packs, remain, size, err := p.cfg.Upstream.CreditPackages(a)
+			if err != nil {
+				it.Error = err.Error()
+				out[i] = it
+				return
+			}
+			it.Packages = packs
+			it.Remain = remain
+			it.Size = size
+			out[i] = it
+		})
+	}
+	wg.Wait()
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Remain > out[j].Remain })
+	for _, it := range out {
+		if it.Error != "" {
+			return // 部分失败不缓存
+		}
+	}
+	p.storePackages(map[string]any{"accounts": out, "cached": true}, time.Now())
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -144,6 +144,16 @@ type Config struct {
 	Upstream struct {
 		// TimeoutSeconds 短 RPC（refresh/checkin/balance/FetchModels）总时长上限，默认 120。
 		TimeoutSeconds int `json:"timeout_seconds"`
+		// DialTimeoutSeconds 出站 **TCP 建连** 上限（默认 20）。<=0 用默认。
+		//
+		// 与 HeaderTimeoutSeconds / IdleTimeoutSeconds 是三段不同的闸：
+		//   - Dial：TCP 三次握手（"连不上"）；
+		//   - Header：已建连、等响应头（"连上了但首字节迟迟不来"，聊天 SSE 主要卡这里）；
+		//   - Idle：流式中途无数据（"吐了一半不动了"）。
+		// 2026-10-21 实测：网络差时 10 次探测有 4 次 12s 都建连失败，而 Header 给到 300s
+		// 也救不了 —— 请求死在 Dial 阶段（日志 `dial tcp <ip>:443: i/o timeout`），
+		// 网关自己返回 503 upstream_timeout。故把 Dial 从硬编码 8s 放宽并开放配置。
+		DialTimeoutSeconds int `json:"dial_timeout_seconds"`
 		// HeaderTimeoutSeconds 聊天 SSE 首字节前（响应头）上限；<=0 回落 TimeoutSeconds。
 		HeaderTimeoutSeconds int `json:"header_timeout_seconds"`
 		// IdleTimeoutSeconds 聊天 SSE 流中空闲上限（活跃吐数据续命不掐）；<=0 回落默认 300。
