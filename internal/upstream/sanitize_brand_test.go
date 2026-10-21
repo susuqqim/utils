@@ -22,7 +22,13 @@ func TestSanitizeBrandIdentitySentence(t *testing.T) {
 		if !strings.Contains(got, "You are a") {
 			t.Errorf("角色定义被误删：in=%q got=%q", c.in, got)
 		}
-		if !strings.Contains(got, "running on a compatible client") {
+		// 【2026-10-21 修正】旧断言要求结果含 "running on a compatible client"，
+		// 但那正是上游 CN 域身份句指纹（issue #18：不带结尾句号即 400/11128）。
+		// 断言 bug 为「期望行为」等于把自伤固化，改为断言绝不落入指纹形态。
+		if strings.Contains(got, "compatible client") {
+			t.Errorf("改写结果落入上游指纹形态（会触发 11128）：in=%q got=%q", c.in, got)
+		}
+		if !strings.Contains(got, "general-purpose assistant") {
 			t.Errorf("未换成中性表述：in=%q got=%q", c.in, got)
 		}
 	}

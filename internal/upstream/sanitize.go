@@ -23,9 +23,15 @@ var sanitizeFeatures = []string{
 	"powered by DeepSeek",                             // 身份句：DSH 类客户端
 	"DeepSeek Harness",                                // 身份句：品牌名
 	"powered by the deepseek",                         // 身份句：小写变体
-	"powered by OpenCode",                             // 身份句：OpenCode 类
-	"powered by Cline",                                // 身份句：Cline 类
-	"Sisyphus-Junior",                                 // OhMyOpenCode / OmO 架构指纹
+	// 【2026-10-21 上游 issue 确证】CN 域对 system/**assistant 历史**的身份句做逐字校验：
+	// `You are an AI agent running on a compatible client`（**不带结尾句号**才拦）。
+	// 这句正是 sanitizeBrandRe 改写后的**产出**，必须进预检 + 改写表，
+	// 否则「预检不中 → 整单跳过净化」→ 原样上行 → 11128。
+	// 证据：zidanefaqih/codebuddy-intl-cpa#18、Ebony-Vinyl/dsh-our-free-model#568。
+	"You are an AI agent running on a compatible client",
+	"powered by OpenCode", // 身份句：OpenCode 类
+	"powered by Cline",    // 身份句：Cline 类
+	"Sisyphus-Junior",     // OhMyOpenCode / OmO 架构指纹
 }
 
 // sanitizeHdrRe 剥离层：header 键名即触发（与值无关），整段删除。
@@ -79,6 +85,12 @@ var sanitizeRewrites = [][2]string{
 		"You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant.",
 	},
 	{
+		// 上游指纹（issue #18 确证）：只匹配**不带句号**的整句。改写为完全不同的措辞，
+		// 避免再产出任何 "AI agent … compatible client" 形状的句子。
+		"You are an AI agent running on a compatible client",
+		"You are an AI agent operating as a general-purpose assistant",
+	},
+	{
 		// 反馈句：整句带 Anthropic 仓库链接，上游按整句拦截（只留链接或只留半边均不拦，
 		// 实测需整句同时出现）。give→provide 一词之差即可绕过，语义不变。
 		"To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
@@ -110,10 +122,16 @@ func sanitizeText(text string) string {
 	if sanitizeOmoRe.MatchString(text) {
 		text = sanitizeOmoRe.ReplaceAllString(text, "Sisyphus-Junior - Focused executor")
 	}
-	// 品牌身份句：<角色> powered by <品牌> → <角色> running on a compatible client
+	// 品牌身份句：<角色> powered by <品牌> → <角色> operating as a general-purpose assistant
 	// （2026-10-21 上游 11128 渠道校验会匹配"身份句+品牌"组合；幂等：改写后不再含 powered by）
+	//
+	// 【2026-10-21 修自伤】原替换串是 "$1 running on a compatible client"，产出的
+	// `You are an AI agent running on a compatible client` **正是上游 CN 域的身份句指纹**
+	//（上游 issue #18 实测：不带结尾句号即 400/11128，带句号反而放行）。
+	// 也就是说这条规则一边「净化」一边**制造指纹**。换成不含 "compatible client"
+	// 形状的中性措辞，与末尾标点彻底解耦。
 	if sanitizeBrandRe.MatchString(text) {
-		text = sanitizeBrandRe.ReplaceAllString(text, "$1 running on a compatible client")
+		text = sanitizeBrandRe.ReplaceAllString(text, "$1 operating as a general-purpose assistant")
 	}
 	if sanitizeHdrRe.MatchString(text) {
 		text = sanitizeHdrRe.ReplaceAllString(text, "")
