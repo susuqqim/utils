@@ -1,4 +1,4 @@
-<#
+﻿<#
 wb2api-update.ps1 -- check for and apply a newer gateway build.
 ASCII ONLY on purpose: Windows PowerShell 5.1 mis-decodes UTF-8 without BOM.
 
@@ -46,9 +46,25 @@ function Get-LocalVersion {
   return '0.0.0'
 }
 function Health {
+  # 健康判据（2026-10-21 修）：
+  #   ① 服务级：200 且确实是本服务在应答（防端口被别的程序占用时误判成功）；
+  #   ② 账号级：池里有账号时**至少一个可用**。
+  #
+  # 旧实现写死 '"healthy":5' —— 只要池里有一个号在冷却/禁用/暂停，就永远不满足，
+  # 结果是**每次更新都必然回滚**（生产实测 healthy=4/total=5 → AUTOMATIC ROLLBACK，
+  # 新版本没问题也装不上）。账号健康是业务状态，不该当"更新成功"的门槛；
+  # 但完全不查又会让"新版本把账号全搞崩"蒙混过关，所以取"非空池至少 1 个健康"。
   try {
     $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:17963/healthz' -TimeoutSec 5
-    return ($r.StatusCode -eq 200 -and $r.Content -match '"healthy":5')
+    if ($r.StatusCode -ne 200) { return $false }
+    $c = [string]$r.Content
+    if ($c -notmatch '"service"\s*:\s*"workbuddy2api"') { return $false }
+    $total = 0
+    $healthy = 0
+    if ($c -match '"total"\s*:\s*(\d+)') { $total = [int]$Matches[1] }
+    if ($c -match '"healthy"\s*:\s*(\d+)') { $healthy = [int]$Matches[1] }
+    if ($total -gt 0 -and $healthy -lt 1) { return $false }
+    return $true
   } catch { return $false }
 }
 function StartCore {
