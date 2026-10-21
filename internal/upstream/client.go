@@ -132,9 +132,16 @@ var sessionDeadMarkers = []string{"Offline user session not found", "12153"}
 // 在 applyErrorPolicy 中不罚账号（无冷却/熔断/NoteError），改由网关降级重试。
 var contentBlockedMarkers = []string{
 	"blocked by security policy",
+	// 这两句历史上一度被当作内容审核文案；2026-10-21 上游把它们用作 11128 渠道校验的 msg。
+	// 保留在此是为了**不改变**"无业务码裸文案"的既有归类（ErrContentBlocked）；
+	// 带 code 11128 的请求会先被 isChannelRefused 截走，不受影响。
 	"unapproved channel",
 	"illegal api invocation",
 }
+
+// contentModerationOnlyMarkers 只属于**内容审核**的文案（11128 的另一种变体）。
+// isChannelRefused 用它做排除：11128 + 这些文案 ⇒ 内容问题，不是渠道校验。
+var contentModerationOnlyMarkers = []string{"blocked by security policy"}
 
 // contentBlockedClientMsg 内容拦截返回给调用方的固定文案。
 // [关键词] 填分类词（色情 / nsfw / 暴力 等），绝不填业务 code、账号、冷却、upstream 前缀。
@@ -278,10 +285,38 @@ func IsAccountRestricted(body string) bool {
 // 11128 还承载内容审核变体（"blocked by security policy"，归 ErrContentBlocked），
 // 故同样必须 code + 文案双条件，不能按 code 一刀切。
 func isChannelRefused(body string) bool {
-	if !strings.Contains(strings.ToLower(body), accountRestrictedMsg) {
+	if !hasBusinessCode(body, "11128") {
 		return false
 	}
-	return hasBusinessCode(body, "11128")
+	// 11128 同时承载**内容审核**变体（"blocked by security policy"）→ 那是内容问题，
+	// 由 ErrContentBlocked 处理（不罚号、走降级重试）。
+	// 注意排除清单必须用内容审核**独有**的文案：不能拿 contentBlockedMarkers 整表，
+	// 否则 "unapproved channel"（新渠道校验文案）会把渠道校验自己排除掉。
+	lower := strings.ToLower(body)
+	for _, m := range contentModerationOnlyMarkers {
+		if strings.Contains(lower, m) {
+			return false
+		}
+	}
+	// 渠道校验的文案族（上游 2026-10-21 起换了新文案，旧文案仍兼容）：
+	//   - 旧："request illegal"
+	//   - 新："Illegal API invocation from an unapproved channel"
+	for _, m := range channelRefusedMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// channelRefusedMarkers 渠道校验失败（11128）的文案族，大小写不敏感。
+// 上游 2026-10-21 把 msg 从 "request illegal" 改为
+// "Illegal API invocation from an unapproved channel"（displayTips：这次调用没通过渠道校验）。
+var channelRefusedMarkers = []string{
+	"request illegal",
+	"illegal api invocation",
+	"unapproved channel",
+	"channel verification",
 }
 
 // softRateResetLoc 上游 429 6004 文案中的重置时间固定按 UTC+8 解释（上游文案如此，
@@ -686,6 +721,11 @@ type Client struct {
 	// 解析优先级：auth.Auth.DeviceToken > DeviceToken（config）> DeviceTokenFile（文件）。
 	DeviceTokenFile string
 
+	// Identity 出站身份预设：""（默认，历史行为）/ "wb" / "vscode" / "cli"（见 identity.go）。
+	// 上游 2026-10-21 收紧渠道校验（11128）后，身份头组不一致会被拦；
+	// 该字段让"用 vsc 或 CLI 出站"成为可配置项，默认空 = 零回归。
+	Identity string
+
 	// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
 	// 空 = 旧行为：X-Product="SaaS"，不设 X-IDE-*（向后兼容，不突变归因）。
 	// 非空（如 "WorkBuddy"）则四头跟随，对齐官方桌面端 client 识别。
@@ -898,29 +938,65 @@ func (c *Client) checkinMeterPaths(a *auth.Auth) []string {
 }
 
 // doJSON 发请求并解信封；HTTP 非 2xx 或业务 code != 0 时返回带 body 片段的 *Error。
+//
+// 传输层容错（2026-10-21 实测：www.workbuddy.ai 间歇性 TLS 握手卡住 17s；资产同步出现
+// `unexpected end of JSON input` 即响应体被提前断开）：本函数的调用者全是**幂等** RPC
+// （查资源/刷新 token/签到/上报），因此对 TLS 握手超时与响应截断各重试一次。
+// 流式 chat 不走这里（见 ChatStream 的 doRetryTLS：只重握手，不重响应）。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
-	resp, err := c.HTTP.Do(req)
+	const attempts = 2
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		r := req
+		if i > 0 {
+			var cerr error
+			r, cerr = cloneRequest(req)
+			if cerr != nil {
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		data, retryable, err := c.doJSONOnce(r)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if !retryable {
+			return nil, err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("request body is not replayable")
+	}
+	return nil, lastErr
+}
+
+// doJSONOnce 单次执行 doJSON 的"发送 + 读取 + 解析"，并报告该错误是否值得重试。
+func (c *Client) doJSONOnce(req *http.Request) (json.RawMessage, bool, error) {
+	resp, err := c.doRetryTLS(c.HTTP, req)
 	if err != nil {
-		return nil, err
+		// TLS 握手超时已在 doRetryTLS 内重试过一次仍失败 ⇒ 交给外层再试一次
+		return nil, isTLSHandshakeErr(err), err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
 		kind := Classify(resp.StatusCode, string(raw))
-		return nil, &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
+		return nil, false, &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("parse failed: %w (body: %s)", err, truncate(string(raw), 120))
+		// 响应体被提前断开 ⇒ JSON 截断，可重试；其余格式错误不可重试
+		return nil, isTruncatedJSONErr(err), fmt.Errorf("parse failed: %w (body: %s)", err, truncate(string(raw), 120))
 	}
 	if env.Code != 0 {
 		kind := Classify(resp.StatusCode, env.Msg)
 		if kind == ErrNone {
 			kind = ErrClient
 		}
-		return nil, &Error{Kind: kind, Status: resp.StatusCode, Msg: fmt.Sprintf("code=%d msg=%s", env.Code, truncate(env.Msg, 160))}
+		return nil, false, &Error{Kind: kind, Status: resp.StatusCode, Msg: fmt.Sprintf("code=%d msg=%s", env.Code, truncate(env.Msg, 160))}
 	}
-	return env.Data, nil
+	return env.Data, false, nil
 }
 
 // RefreshToken 刷新 access token；成功时更新 a 的字段（缺省值保留旧值），
@@ -1054,7 +1130,8 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		var reqCtx context.Context
 		reqCtx, cancel = context.WithCancel(ctx)
 		req = req.WithContext(reqCtx)
-		resp, err := c.chatHTTP().Do(req)
+		// 仅 TLS 握手超时重试一次：握手未完成 ⇒ 请求字节未发出，不会重复生成。
+		resp, err := c.doRetryTLS(c.chatHTTP(), req)
 		if err != nil {
 			cancel()
 			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {

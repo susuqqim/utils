@@ -153,6 +153,10 @@ func (c *Client) userAgent(a *auth.Auth) string {
 	if c != nil && c.UserAgent != "" {
 		return c.UserAgent
 	}
+	// 身份预设优先于默认三段式（预设的 UA 与其头组是配套的，混用会重新变成"不一致"形态）。
+	if preset, ok := c.identityPresetFor(); ok && preset.ua != "" {
+		return preset.ua
+	}
 	return c.defaultWorkBuddyUAFor(a)
 }
 
@@ -373,6 +377,19 @@ func validTraceID(s string) bool {
 // 取值跟随 ClientName（X-IDE-Name/Type/Product = WorkBuddy），X-IDE-Version = 客户端
 // 版本段（config client_version 可覆盖）。与官方 banner 头组完全同形。
 func (c *Client) injectAttribution(req *http.Request) {
+	// 身份预设：整套身份头一次写全（UA 由 userAgent 配套给出），优先于 ClientName 分支。
+	if preset, ok := c.identityPresetFor(); ok {
+		for k, v := range preset.headers {
+			req.Header.Set(k, v)
+		}
+		if v := preset.headers["X-IDE-Version"]; v == "" {
+			// wb / cli 预设：X-IDE-Version 跟随客户端版本段（与官方头组同形）。
+			if req.Header.Get("X-IDE-Name") != "" {
+				req.Header.Set("X-IDE-Version", c.clientVersion())
+			}
+		}
+		return
+	}
 	if c == nil || c.ClientName == "" {
 		req.Header.Set("X-Product", "SaaS")
 		return

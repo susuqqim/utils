@@ -21,6 +21,7 @@ import (
 
 	"workbuddy2api/internal/config"
 	"workbuddy2api/internal/prompt"
+	"workbuddy2api/internal/upstream"
 )
 
 // Config 顶层配置。
@@ -171,6 +172,9 @@ type Config struct {
 		// ClientName 用量归属头 X-Product/X-IDE-Name/X-IDE-Type 的取值。
 		// 空（缺省）= 旧行为：X-Product="SaaS"，不设 X-IDE-*（避免行为突变）。
 		// 配 "WorkBuddy" 则三头跟随该值，匹配官方桌面端用量归因。
+		// Identity 出站身份预设：""（默认，历史行为）/ "wb" / "vscode" / "cli"。
+		// 上游 2026-10-21 收紧渠道校验（11128）后，"用 vsc 或 CLI 出站"是社区实测的绕行手段。
+		Identity   string `json:"identity"`
 		ClientName string `json:"client_name"`
 		// PassthroughIP 是否透传客户端 IP（X-Forwarded-For/X-Real-IP 首段）给上游。
 		// 缺省 false（反代安全边界：不把内网/代理 IP 暴露给上游）；true 才透传。
@@ -690,6 +694,11 @@ func (c *Config) normalize() error {
 	if c.RestrictionPauseD, err = time.ParseDuration(c.Pool.RestrictionPause); err != nil {
 		return fmt.Errorf("pool.restriction_pause: %w", err)
 	}
+	// 出站身份预设置：未知取值直接报错（避免"配了但静默不生效"）。
+	if _, ok := upstream.NormalizeIdentity(c.Upstream.Identity); !ok {
+		return fmt.Errorf("upstream.identity: 未知取值 %q（可选：wb / vscode / cli，留空=历史行为）", c.Upstream.Identity)
+	}
+
 	if c.BreakerCooldownDur, err = time.ParseDuration(c.Pool.BreakerCooldown); err != nil {
 		return fmt.Errorf("pool.breaker_cooldown: %w", err)
 	}

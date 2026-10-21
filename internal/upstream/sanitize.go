@@ -20,6 +20,11 @@ var sanitizeFeatures = []string{
 	"You are a coding agent running in the Codex CLI", // Codex instructions 首段（截断前缀即可命中）
 	"github.com/anthropics/",                          // 反馈句里的 Anthropic 仓库链接
 	"11-128",                                          // 上游反探测：裸数字错误码
+	"powered by DeepSeek",                             // 身份句：DSH 类客户端
+	"DeepSeek Harness",                                // 身份句：品牌名
+	"powered by the deepseek",                         // 身份句：小写变体
+	"powered by OpenCode",                             // 身份句：OpenCode 类
+	"powered by Cline",                                // 身份句：Cline 类
 	"Sisyphus-Junior",                                 // OhMyOpenCode / OmO 架构指纹
 }
 
@@ -32,6 +37,24 @@ var sanitizeKvRe = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\n]*;?\s*`)
 // sanitizeOmoRe 改写层：OhMyOpenCode 身份指纹（上游返回 11128 "Illegal API invocation from an unapproved channel" 拦截）。
 // 仅重写此确认的连续子串，去除框架归属，保留 Agent 行为定义。
 var sanitizeOmoRe = regexp.MustCompile(`(?i)Sisyphus-Junior - Focused executor from OhMyOpenCode`)
+
+// sanitizeBrandRe 改写层：把 "<角色> powered by <品牌>[ <版本>]" 的**组合指纹**改成中性表述。
+//
+// 2026-10-21 上游收紧渠道校验（11128 "Illegal API invocation from an unapproved channel"）后，
+// 判定依据不再只有 UA/头，还包含**提示词里的身份句 + 品牌组合**。对照
+// ardeyouxipianyi/workbuddy2api-hub 的 #533/#537/#539（"身份句 + 品牌的组合指纹改为中性句"）：
+// 上游会匹配形如
+//
+//	You are an AI agent powered by DeepSeek Harness.
+//	You are a coding agent powered by the deepseek-v4.1-flash model.
+//
+// 这类句子。只改"powered by …"这半句、保留角色定义，语义不变、行为不受影响。
+// 匹配只到句号/换行/逗号前，避免吞掉后续指令。
+var sanitizeBrandRe = regexp.MustCompile(`(?i)\b(You are an? (?:AI agent|coding agent|AI assistant|assistant)) powered by [A-Za-z0-9](?:[A-Za-z0-9 .\-_]*[A-Za-z0-9])?`)
+
+//
+// 正则不含前瞻（Go RE2 不支持 `(?=...)`）：品牌段以字母数字收尾，
+// 句号/逗号/分号/换行天然留在匹配之外，替换后原标点保持不变。
 
 // sanitizeRewrites 改写层：全模板句逐字替换（每句只改一个词，语义不变）。
 //
@@ -86,6 +109,11 @@ func sanitizeText(text string) string {
 	}
 	if sanitizeOmoRe.MatchString(text) {
 		text = sanitizeOmoRe.ReplaceAllString(text, "Sisyphus-Junior - Focused executor")
+	}
+	// 品牌身份句：<角色> powered by <品牌> → <角色> running on a compatible client
+	// （2026-10-21 上游 11128 渠道校验会匹配"身份句+品牌"组合；幂等：改写后不再含 powered by）
+	if sanitizeBrandRe.MatchString(text) {
+		text = sanitizeBrandRe.ReplaceAllString(text, "$1 running on a compatible client")
 	}
 	if sanitizeHdrRe.MatchString(text) {
 		text = sanitizeHdrRe.ReplaceAllString(text, "")
