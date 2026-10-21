@@ -29,6 +29,12 @@ var sanitizeFeatures = []string{
 	// 否则「预检不中 → 整单跳过净化」→ 原样上行 → 11128。
 	// 证据：zidanefaqih/codebuddy-intl-cpa#18、Ebony-Vinyl/dsh-our-free-model#568。
 	"You are an AI agent running on a compatible client",
+	// 【2026-10-22 生产抓包逐字节二分确证】DSH 更新了 system prompt 措辞：
+	//   旧版（通过）: `... Web GUI at http://127.0.0.1:38080.`
+	//   新版（11128）: `... Web GUI whose URL the runtime context names.`
+	// 只把这一个从句换成中性表述即 200（同一请求连发 5 次稳定 400，非抽样）。
+	// 这是目前唯一能确定复现的 CN 域指纹，必须进预检 + 改写表。
+	"whose URL the runtime context names",
 	"powered by OpenCode", // 身份句：OpenCode 类
 	"powered by Cline",    // 身份句：Cline 类
 	"Sisyphus-Junior",     // OhMyOpenCode / OmO 架构指纹
@@ -72,6 +78,14 @@ var sanitizeBrandRe = regexp.MustCompile(`(?i)\b(You are an? (?:AI agent|coding 
 // 注意仍要求 "You are Claude Code, " 前缀，不做更宽的子串替换，
 // 以免误伤 TestExactMatchOnlyVariantNotTouched 所保护的零散文本。
 var sanitizeRewrites = [][2]string{
+	{
+		// 【2026-10-22 生产逐字节二分确证，唯一稳定复现的 CN 域指纹】
+		// DSH 新版 system prompt 把 GUI 地址写成「由 runtime context 命名」的从句，
+		// 上游据此判定非官方客户端。改写成中性表述后同一请求 5/5 由 400 变 200。
+		// 只替换这一个从句（不动整句/其它 "runtime context" 出现处），最小侵入。
+		"whose URL the runtime context names",
+		"at the local address shown above",
+	},
 	{
 		"You are Claude Code, Anthropic's official CLI for Claude",
 		"You are Claude Code, Anthropic's official CLI tool for Claude",

@@ -39,7 +39,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.18-panel"
+const appVersion = "1.11.19-panel"
 
 // restartHidden 为真时（托盘模式），重启子进程用 CREATE_NO_WINDOW 拉起，
 // 避免新控制台闪窗；仅 Windows 生效（见 restart_windows.go）。
