@@ -390,6 +390,36 @@ function outCell(m, pr) {
    modelPromotions 给当前生效折扣（限时免费 factor=0 / 夜间五折 0.5 等）——
    WorkBuddy 客户端显示的正是生效价。有折扣：生效价大字 + 标签 + 划线牌价，
    悬停带时段说明；无 factor 只有标签（错峰类）：牌价 + 标签。 */
+/* 繁忙程度单元格：读上游 /v2/chat/queue/status 的结果（服务端缓存 2 分钟）。
+   状态语义（官方客户端状态机）：
+     expired   空闲常态（无排队）   ready   就绪
+     waiting   排队中               full    队列已满 ← 忙
+     user_limit 该用户限流           timeout 超时
+   未知/未查显示「—」，点「查繁忙」按钮才会穿透缓存重新查。 */
+function queueCell(m) {
+  const st = (window.__queueMap || {})[m.id];
+  if (!st) return '<td class="num"><span style="color:var(--ink-3)">—</span></td>';
+  const s = String(st.status || '');
+  const map = {
+    expired: ['ok', '空闲'], ready: ['ok', '就绪'],
+    waiting: ['warn', '排队中'], full: ['err', '繁忙'],
+    user_limit: ['err', '限流'], timeout: ['warn', '超时'],
+    cancelled: ['', '已取消'], unknown: ['', '未知'],
+  };
+  const [cls, label] = map[s] || ['', s || '未知'];
+  const extra = [];
+  const ex = st.extra || {};
+  for (const k of Object.keys(ex)) {
+    if (k === 'status' || k === 'message') continue;
+    const v = ex[k];
+    if (v === null || v === undefined || v === '') continue;
+    extra.push(k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v));
+  }
+  const tip = (st.message ? st.message : '') + (extra.length ? ' | ' + extra.join(' ') : '');
+  const tag = cls ? '<span class="tag ' + cls + '">' + esc(label) + '</span>' : esc(label);
+  return '<td class="num"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + tag + '</td>';
+}
+
 function rateCell(m) {
   const tip = m.promo_note ? ' title="' + esc(m.promo_note) + '"' : '';
   if (m.promo_factor != null && m.promo_credits) {
@@ -404,14 +434,18 @@ function rateCell(m) {
   return m.credits ? esc(m.credits) : '—';
 }
 
-async function loadModels() {
+async function loadModels(force) {
   const tb = $('mdBody');
-  tb.innerHTML = '<tr><td colspan="7"><div class="empty">正在向上游查询…</div></td></tr>';
+  tb.innerHTML = '<tr><td colspan="8"><div class="empty">正在向上游查询…</div></td></tr>';
   try {
     // 探测数据是可选增强：拉取失败不影响模型列表本身
-    const [d, pr] = await Promise.all([api('models'), api('model_probes').catch(() => ({}))]);
+    const [d, pr] = await Promise.all([api('models' + (force ? '?refresh=1' : '')), api('model_probes').catch(() => ({}))]);
     const list = d.models || [];
-    if (!list.length) { tb.innerHTML = '<tr><td colspan="7"><div class="empty">上游未返回模型</div></td></tr>'; return; }
+      // 繁忙度：默认读服务端 2 分钟缓存（不额外打上游）；点「查繁忙」才穿透刷新。
+      let queueMap = {};
+      try { const q = await api('model-queue'); queueMap = q.queue || {}; } catch (e) { /* 辅助信息，失败不影响列表 */ }
+      window.__queueMap = queueMap;
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="8"><div class="empty">上游未返回模型</div></td></tr>'; return; }
     const probes = pr.probes || {};
     const probeKeys = Object.keys(probes);
     const probeOf = id => probes[id] || probes[probeKeys.find(k => k.endsWith(':' + id))];
@@ -432,7 +466,8 @@ async function loadModels() {
       const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
       const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
       return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm">' + esc(m.id) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
-        '<td class="num">' + rateCell(m) + '</td>' +
+        queueCell(m) +
+          '<td class="num">' + rateCell(m) + '</td>' +
         '<td>' + (m.default_effort ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
         '<td class="efs" style="white-space:normal">' + effs + '</td>' +
         '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
@@ -441,7 +476,7 @@ async function loadModels() {
     const cnModels = list.filter(m => !String(m.id).startsWith('global:'));
     const glModels = list.filter(m => String(m.id).startsWith('global:'));
     const sectRow = (title, n, hint) =>
-      '<tr class="sect"><td colspan="7" style="background:var(--surface-2);font-weight:600;padding:8px 10px">' +
+      '<tr class="sect"><td colspan="8" style="background:var(--surface-2);font-weight:600;padding:8px 10px">' +
       title + '（' + n + '）' + (hint ? ' <span style="font-weight:400;color:var(--ink-3);font-size:12.5px">' + hint + '</span>' : '') + '</td></tr>';
     let html = '';
     html += sectRow('🇨🇳 国内版', cnModels.length, cnModels.length ? '' : '（池内无 cn 账号或上游未返回）');
@@ -450,12 +485,26 @@ async function loadModels() {
     if (glModels.length) html += glModels.map(rowOf).join('');
     tb.innerHTML = html;
     const hit = list.filter(m => probeOf(m.id)).length;
-    $('mdNote').textContent = list.length + ' 个模型 · 已刷新降级缓存' + (hit ? ' · ' + hit + ' 个有实测上限' : '');
+    const cacheTag = d.cached ? ('目录缓存 ' + (d.age_seconds || 0) + 's 前') : '目录已刷新';
+      $('mdNote').textContent = list.length + ' 个模型 · ' + cacheTag + (hit ? ' · ' + hit + ' 个有实测上限' : '');
   } catch (e) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">' + esc(e.message) + '</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty">' + esc(e.message) + '</div></td></tr>';
   }
 }
-$('btnModels').onclick = loadModels;
+$('btnModels').onclick = () => loadModels(true);
+  /* 查繁忙：跳过服务端 2 分钟缓存，重新按模型查上游排队状态。
+     这是**唯一**会为繁忙度打上游的入口——打开页面只读缓存，不主动扫描。 */
+  $('btnQueue').onclick = async () => {
+    const b = $('btnQueue');
+    b.disabled = true; const old = b.textContent; b.textContent = '查询中…';
+    try {
+      const q = await api('model-queue?refresh=1');
+      window.__queueMap = q.queue || {};
+      $('mdNote').textContent = '繁忙度已刷新 · ' + Object.keys(window.__queueMap).length + ' 个模型';
+      await loadModels();  // 重绘（此时目录多半命中缓存，几乎不额外打上游）
+    } catch (e) { toast('查询繁忙度失败：' + e.message, 'err'); }
+    finally { b.disabled = false; b.textContent = old; }
+  };
 
 /* ── 日志（频道：全部/任务/对话/系统） ─────────────────────────────── */
 let logCh = 'all';
@@ -531,6 +580,7 @@ const CFG_MAP = {
   timeout_seconds: ['upstream', 'timeout_seconds'], header_timeout_seconds: ['upstream', 'header_timeout_seconds'],
   idle_timeout_seconds: ['upstream', 'idle_timeout_seconds'], user_agent: ['upstream', 'user_agent'],
   identity: ['upstream', 'identity'],
+  private_data: ['upstream', 'private_data'],
   prompt_mode: ['prompt', 'mode'], prompt_file: ['prompt', 'file'],
   sanitize_blacklist_fingerprints: ['features', 'sanitize_blacklist_fingerprints'],
   ui_tray: ['ui', 'tray'],

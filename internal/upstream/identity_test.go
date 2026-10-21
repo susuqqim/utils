@@ -27,7 +27,7 @@ func TestIdentityPresetsCoherent(t *testing.T) {
 			t.Errorf("%s UA=%q want %q", c.identity, got, c.wantUA)
 		}
 		req := httptest.NewRequest(http.MethodPost, "/v2/chat/completions", nil)
-		cl.injectAttribution(req)
+		cl.injectAttribution(req, nil)
 		if got := req.Header.Get("X-Product"); got != c.wantProd {
 			t.Errorf("%s X-Product=%q want %q", c.identity, got, c.wantProd)
 		}
@@ -51,7 +51,7 @@ func TestIdentityWB(t *testing.T) {
 		t.Errorf("wb UA 应走默认三段式，实得 %q", got)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v2/chat/completions", nil)
-	cl.injectAttribution(req)
+	cl.injectAttribution(req, nil)
 	if req.Header.Get("X-Product") != "WorkBuddy" || req.Header.Get("X-IDE-Name") != "WorkBuddy" {
 		t.Errorf("wb 头组不一致: %v", req.Header)
 	}
@@ -64,7 +64,7 @@ func TestIdentityWB(t *testing.T) {
 func TestIdentityDefaultIsCoherent(t *testing.T) {
 	cl := New()
 	req := httptest.NewRequest(http.MethodPost, "/v2/chat/completions", nil)
-	cl.injectAttribution(req)
+	cl.injectAttribution(req, nil)
 	if got := req.Header.Get("X-Product"); got != "WorkBuddy" {
 		t.Errorf("默认 X-Product 应为 WorkBuddy（与 UA 自洽），实得 %q", got)
 	}

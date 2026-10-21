@@ -297,7 +297,7 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	// 识别 client，避免上游用量统计里 client/agentPurpose 为空。来源 xiaofan6ya/converter.py。
 	// 默认（ClientName 空）保持 X-Product="SaaS" 兼容现状，不设 X-IDE-*（不突变归因）；
 	// 配 ClientName（如 "WorkBuddy"）则四头跟随该值，对齐官方桌面端。
-	c.injectAttribution(req)
+	c.injectAttribution(req, a)
 	// 客户端 IP 透传：仅当 PassthroughIP=true 且本次请求 clientIP 参数非空（见 handler 设置）。
 	// 缺省 false（反代安全边界：不把内网/代理 IP 暴露给上游）。
 	c.injectClientIP(req, clientIP)
@@ -376,7 +376,7 @@ func validTraceID(s string) bool {
 // B 段对齐官方白名单头组（application-manifest.js:27590-27601）：X-IDE-* 四头齐全且
 // 取值跟随 ClientName（X-IDE-Name/Type/Product = WorkBuddy），X-IDE-Version = 客户端
 // 版本段（config client_version 可覆盖）。与官方 banner 头组完全同形。
-func (c *Client) injectAttribution(req *http.Request) {
+func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	// 优先级（2026-10-21 上游收紧渠道校验后重排）：
 	//   ① identity 预设（显式选择 wb / vscode / cli）；
 	//   ② client_name 显式覆盖（历史配置项，用户自己填的品牌）；
@@ -387,6 +387,11 @@ func (c *Client) injectAttribution(req *http.Request) {
 	// WorkBuddy 桌面端、头却说自己是 SaaS、且没有 IDE 标识"这种**混搭形态**
 	// 正是上游 11128 渠道校验的可疑触发点。默认改成全套 WorkBuddy 后，
 	// 未配置任何身份相关键的部署也发得出**同一个官方客户端**的完整形态。
+	// X-Private-Data（「数据私有」声明）：与身份无关，按官方默认或运维声明注入。
+	// 官方证据见 identity.go 的 privateDataValue 注释；空串 = 该身份不发此头。
+	if v := c.privateDataValue(a); v != "" {
+		req.Header.Set("X-Private-Data", v)
+	}
 	if preset, ok := c.identityPresetFor(); ok {
 		c.applyIdentityPreset(req, preset)
 		return

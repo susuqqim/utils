@@ -96,6 +96,18 @@ type Panel struct {
 	loginMu sync.Mutex
 	logins  map[string]loginSession
 
+	// modelsMu/modelsCache 模型目录缓存（2026-10-21）：
+	// /panel/api/models 此前**每次**都向上游发 2~3 次 /v3/config（CN 双 UA + global），
+	// 面板每切一次页就烧一轮上游请求，既慢又平添风控暴露。
+	// 现在按 realm 缓存 catalogTTL，`?refresh=1` 强制穿透。
+	modelsMu    sync.Mutex
+	modelsCache map[string]modelsCacheEntry
+
+	// queueMu/queueCache 排队（繁忙度）缓存：/v2/chat/queue/status 是**按模型**的，
+	// 一次全量查询 = 模型数条上游请求，必须长缓存 + 并发节流，否则刷新一次就打出几十条。
+	queueMu    sync.Mutex
+	queueCache map[string]queueCacheEntry
+
 	// taskMu/taskLocks 一键完成任务的 per-account 互斥：同一账号的任务动作
 	// （单任务 / 全量）同时只允许一条在跑。重复点击直接返回 409"仍在执行"，
 	// 而不是并发跑两遍浪费上游请求（动作虽幂等，expert 系每遍含 8 次真实对话）。
@@ -231,6 +243,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/overview", p.withAuth(p.overview))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
+	// 排队/繁忙度（按模型查上游 /v2/chat/queue/status，独立 2 分钟缓存 + 并发 3）
+	p.mux.HandleFunc("GET /panel/api/model-queue", p.withAuth(p.modelQueue))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
@@ -388,6 +402,21 @@ func (p *Panel) logsHandler(w http.ResponseWriter, r *http.Request) {
 // 各域独立探测、独立容错：某域无可用账号则整域跳过；两域全空时才报错
 // （有错误明细回 502，一个账号都没有回 503）。
 func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	// 缓存命中直接返回（10 分钟内不重复打上游）；?refresh=1 穿透。
+	// 每次未命中要打 2~3 次 /v3/config（CN 双 UA + global），面板切页就刷一轮，
+	// 既慢又把网关伪装成扫描器（2026-10-21）。
+	if !wantRefresh(r) {
+		if e, ok := p.cachedModels("all", now); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok": true, "models": e.entries, "cached": true,
+				"age_seconds": int(now.Sub(e.fetched).Seconds()),
+				"warnings":    e.errs,
+			})
+			return
+		}
+	}
+
 	out := make([]map[string]any, 0)
 	var fetchErrs []string
 
@@ -432,7 +461,8 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": out})
+	p.storeModels("all", out, fetchErrs, now)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": out, "cached": false, "warnings": fetchErrs})
 }
 
 // panelModelEntry 构造单个模型条目（两域共用）：id 带 realm 前缀（调用值即显示值），

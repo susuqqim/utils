@@ -726,6 +726,13 @@ type Client struct {
 	// 该字段让"用 vsc 或 CLI 出站"成为可配置项，默认空 = 零回归。
 	Identity string
 
+	// PrivateData X-Private-Data（「数据私有」声明）取值：
+	//   "" / "auto" = 按出站身份的官方默认（默认值）
+	//   "true"      = 数据私有，不参与模型优化
+	//   "false"     = 允许参与模型优化
+	// 注意语义方向：true 更隐私，与变量名 enableModelOptimization 正相反。
+	PrivateData string
+
 	// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
 	// 空 = 旧行为：X-Product="SaaS"，不设 X-IDE-*（向后兼容，不突变归因）。
 	// 非空（如 "WorkBuddy"）则四头跟随，对齐官方桌面端 client 识别。

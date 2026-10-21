@@ -46,6 +46,9 @@ func TestPanelRouteInventory(t *testing.T) {
 		"POST /panel/api/checkin_all",
 		"GET /panel/api/model-locks",
 		"GET /panel/api/update/check", // 只读：拉 latest.json 比对版本，不改任何状态
+		// 只读：按模型查上游 /v2/chat/queue/status 的排队状态，仅读取，不改任何状态；
+		// 结果写进进程内 2 分钟缓存（缓存不是"状态变更"，无需 CSRF 白名单）。
+		"GET /panel/api/model-queue",
 		"GET /panel/api/reqlog", "POST /panel/api/travel_all",
 		"POST /panel/api/activity_all", "POST /panel/api/balance_all",
 		"POST /panel/api/keepalive_all", "POST /panel/api/usage/save",

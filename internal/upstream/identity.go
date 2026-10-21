@@ -1,6 +1,10 @@
 package upstream
 
-import "strings"
+import (
+	"strings"
+
+	"workbuddy2api/internal/auth"
+)
 
 // identity.go 出站身份预设：WB（桌面端）/ VSCode（IDE 扩展）/ CLI。
 //
@@ -89,6 +93,77 @@ func NormalizeIdentity(v string) (string, bool) {
 		return IdentityCLI, true
 	default:
 		return "", false
+	}
+}
+
+// effectiveIdentity 返回本次请求实际生效的身份（空 identity 走默认 WB 形态）。
+func (c *Client) effectiveIdentity() string {
+	if c == nil {
+		return IdentityWB
+	}
+	canonical, ok := NormalizeIdentity(c.Identity)
+	if !ok || canonical == IdentityDefault {
+		return IdentityWB // 默认 = 与默认 UA 自洽的 WB 桌面端
+	}
+	return canonical
+}
+
+// PrivateData 取值语义（官方 @tencent-ai/codebuddy-code 解包，见 hub wb_identity.py）：
+//
+//	X-Private-Data 是「**数据私有**」声明：
+//	  true  = 数据私有，不参与模型优化（企业号默认）
+//	  false = 允许参与模型优化（个人号默认）
+//	注意不要按变量名直读 —— 官方内部字段是 enableModelOptimization，语义正相反。
+//
+// 各身份的官方默认值：
+//   - WB 桌面端：**无条件 true**；
+//   - VSCode 扩展：**仅非国内站**发 true（国内站不发此头）；
+//   - CLI：企业号 true / 个人号 false。
+const (
+	PrivateDataAuto  = ""      // 空 / "auto"：按身份默认
+	PrivateDataTrue  = "true"  // 数据私有（不参与模型优化）
+	PrivateDataFalse = "false" // 允许参与模型优化
+)
+
+// NormalizePrivateData 归一化 upstream.private_data 取值。
+// 返回 (规范值, 是否合法)："" 表示 auto（按身份默认）。
+func NormalizePrivateData(v string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "auto":
+		return PrivateDataAuto, true
+	case "true", "on", "yes", "1":
+		return PrivateDataTrue, true
+	case "false", "off", "no", "0":
+		return PrivateDataFalse, true
+	default:
+		return "", false
+	}
+}
+
+// privateDataValue 计算本次请求的 X-Private-Data 取值（"" = 不发此头）。
+//
+// 优先级：运维显式声明（true/false 逐字发送）> 身份默认。
+func (c *Client) privateDataValue(a *auth.Auth) string {
+	if c != nil {
+		if v, ok := NormalizePrivateData(c.PrivateData); ok && v != PrivateDataAuto {
+			return v
+		}
+	}
+	switch c.effectiveIdentity() {
+	case IdentityVSCode:
+		// 官方 CraftInvokableAgent 拦截器只在非国内站注入
+		if a != nil && a.IsGlobal() {
+			return PrivateDataTrue
+		}
+		return "" // 国内站不发
+	case IdentityCLI:
+		// 官方 getCustomHeaders：企业号 true、个人号 false（必定发送）
+		if a != nil && strings.TrimSpace(a.EnterpriseID) != "" {
+			return PrivateDataTrue
+		}
+		return PrivateDataFalse
+	default: // WB 桌面端（含默认）
+		return PrivateDataTrue
 	}
 }
 

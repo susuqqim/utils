@@ -174,8 +174,12 @@ type Config struct {
 		// 配 "WorkBuddy" 则三头跟随该值，匹配官方桌面端用量归因。
 		// Identity 出站身份预设：""（默认，历史行为）/ "wb" / "vscode" / "cli"。
 		// 上游 2026-10-21 收紧渠道校验（11128）后，"用 vsc 或 CLI 出站"是社区实测的绕行手段。
-		Identity   string `json:"identity"`
-		ClientName string `json:"client_name"`
+		Identity string `json:"identity"`
+		// PrivateData X-Private-Data（「数据私有」声明）：""/"auto" = 按出站身份的官方默认；
+		// "true" = 数据私有（不参与模型优化）；"false" = 允许参与模型优化。
+		// 注意语义方向：true 更隐私，与官方内部字段 enableModelOptimization 正相反。
+		PrivateData string `json:"private_data"`
+		ClientName  string `json:"client_name"`
 		// PassthroughIP 是否透传客户端 IP（X-Forwarded-For/X-Real-IP 首段）给上游。
 		// 缺省 false（反代安全边界：不把内网/代理 IP 暴露给上游）；true 才透传。
 		PassthroughIP bool `json:"passthrough_ip"`
@@ -696,7 +700,10 @@ func (c *Config) normalize() error {
 	}
 	// 出站身份预设置：未知取值直接报错（避免"配了但静默不生效"）。
 	if _, ok := upstream.NormalizeIdentity(c.Upstream.Identity); !ok {
-		return fmt.Errorf("upstream.identity: 未知取值 %q（可选：wb / vscode / cli，留空=历史行为）", c.Upstream.Identity)
+		return fmt.Errorf("upstream.identity: 未知取值 %q（可选：wb / vscode / cli，留空=默认自洽 WB）", c.Upstream.Identity)
+	}
+	if _, ok := upstream.NormalizePrivateData(c.Upstream.PrivateData); !ok {
+		return fmt.Errorf("upstream.private_data: 未知取值 %q（可选：auto / true / false）", c.Upstream.PrivateData)
 	}
 
 	if c.BreakerCooldownDur, err = time.ParseDuration(c.Pool.BreakerCooldown); err != nil {

@@ -754,12 +754,13 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <h3>模型能力 <span class="hint">max_tokens bug已修复目前可以正常透传最大输出,但是官方返回的最大输出仅为参考，不保证完全正确
           </span></h3>
           <span class="grow"></span>
-          <span class="note" id="mdNote">实时查询上游</span>
-          <button class="xs" id="btnModels">重新获取</button>
+          <span class="note" id="mdNote">读取中…</span>
+          <button class="xs" id="btnModels" title="跳过 10 分钟缓存，重新向上游拉取模型目录">刷新模型</button>
+          <button class="xs" id="btnQueue" title="按模型查询上游排队状态（并发 3，结果缓存 2 分钟）">查繁忙</button>
         </header>
         <div class="tbl-wrap">
         <table class="acc md">
-          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>繁忙程度</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
         </div>
@@ -1124,6 +1125,13 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
                   <option value="cli">cli — 桌面端内置 CLI</option>
                 </select>
                 <span class="hint">上游 2026-10 收紧渠道校验（11128）后可换一套官方身份重试；需重启</span></label>
+                <label class="fld"><span class="lb">X-Private-Data（数据私有声明）</span>
+                  <select name="private_data">
+                    <option value="auto">auto — 跟随身份官方默认（推荐）</option>
+                    <option value="true">true — 数据私有，不参与模型优化</option>
+                    <option value="false">false — 允许参与模型优化</option>
+                  </select>
+                  <span class="hint">官方证据：WB 桌面端 true、VSCode 仅国际站发、CLI 企业号 true/个人号 false；需重启</span></label>
               <label class="fld"><span class="lb">出站 User-Agent</span>
                 <input name="user_agent" placeholder="留空 = 跟随身份预设">
                 <span class="hint">显式填写会覆盖身份预设的 UA；影响官网积分记录「使用端」显示；需重启</span></label>

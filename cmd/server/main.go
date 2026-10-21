@@ -38,7 +38,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.14-panel"
+const appVersion = "1.11.15-panel"
 
 // restartHidden 为真时（托盘模式），重启子进程用 CREATE_NO_WINDOW 拉起，
 // 避免新控制台闪窗；仅 Windows 生效（见 restart_windows.go）。
@@ -287,6 +287,8 @@ func main() {
 	up.ClientName = cfg.Upstream.ClientName
 	// 出站身份预设（wb / vscode / cli）：空 = 历史行为，零回归。
 	up.Identity = cfg.Upstream.Identity
+	// X-Private-Data（数据私有声明）：空 = 按身份官方默认。
+	up.PrivateData = cfg.Upstream.PrivateData
 	up.PassthroughIP = cfg.Upstream.PassthroughIP
 	// global realm 双域路由（config global 段）：base 空回落内置默认 https://www.workbuddy.ai；
 	// GlobalEnabled 与 auth 包开关一致（双保险第二道闸在 upstream.globalOn）。

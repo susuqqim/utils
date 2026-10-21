@@ -63,6 +63,7 @@
     "device_token": "",
     "device_token_file": "",
     "identity": "",
+    "private_data": "auto",
     "client_name": "WorkBuddy",
     "passthrough_ip": false
   },
