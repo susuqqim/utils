@@ -1,15 +1,15 @@
 {
-  "version": "1.11.20",
-  "sha256": "310559dfbd772f84de58722fab2eaa3fd078f246b955fdcf6b0b56e06ec3ba50",
+  "version": "1.11.21",
+  "sha256": "f954215339660ae68b9b5d2a073aaf660c0cc162be2e20b9099690b5b6e7ca24",
   "size": 10214912,
   "urls": [
-    "https://github.com/susuqqim/utils/releases/download/v1.11.20/wb2api-core.exe"
+    "https://github.com/susuqqim/utils/releases/download/v1.11.21/wb2api-core.exe"
   ],
-  "generated": "2026-10-22T04:30:58",
+  "generated": "2026-10-22T05:10:53",
   "msi": {
-    "name": "workbuddy2api-1.11.20-x64.msi",
-    "url": "https://github.com/susuqqim/utils/releases/download/v1.11.20/workbuddy2api-1.11.20-x64.msi",
-    "sha256": "8cc18abb708e868de62cf7d8a0e1efd82746d80f04ad2ca00104777bde1fa311",
-    "size": 3641344
+    "name": "workbuddy2api-1.11.21-x64.msi",
+    "url": "https://github.com/susuqqim/utils/releases/download/v1.11.21/workbuddy2api-1.11.21-x64.msi",
+    "sha256": "19fef5b421b71d42cc3b059dd73e13a5d34b67ce972b75840e84bc02af75a972",
+    "size": 3649536
   }
 }

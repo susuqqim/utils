@@ -124,6 +124,12 @@
         <File Id="filSetupKey" Source="$(StageDir)\setup-key.ps1"/>
       </Component>
       <!-- $(SkipPathEnv)=1：测试包不碰用户 PATH（避免与生产条目重复/残留）。 -->
+      <!-- 卸载时顺带清掉「备份旧 exe」可能留下的残留文件 -->
+      <Component Id="cmpStale" Guid="{5C1E7A93-2B4F-4D8E-8A61-9F3C2E7B5D14}">
+        <RemoveFile Id="rfPreUpdate" Name="wb2api-core.exe.preupdate" On="uninstall"/>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API" Name="StaleCleanup$(PathMarkerSuffix)"
+                       Type="integer" Value="1" KeyPath="yes"/>
+      </Component>
       <Component Id="cmpPath" Guid="{38A18344-D741-5D0C-E328-D78AD100A9F9}">
         <?if $(SkipPathEnv) != "1" ?>
         <Environment Id="EnvPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last"
@@ -235,17 +241,28 @@
          · $(SkipStartCA)=1 可单独剔除（只做文件部署 / 由外部脚本负责启动的场景）。 -->
     <?if $(SkipStartCA) != "1" ?>
     <CustomAction Id="CaStartApp" Directory="INSTALLFOLDER"
-                  ExeCommand="[SystemFolder]cmd.exe /c start &quot;&quot; &quot;[INSTALLFOLDER]wb2api-core.exe&quot; -config &quot;%USERPROFILE%\$(DataDirName)\config.json&quot;"
+                  ExeCommand="[SystemFolder]cmd.exe /c del /f /q &quot;[INSTALLFOLDER]wb2api-core.exe.preupdate&quot; 2&gt;nul &amp; start &quot;&quot; &quot;[INSTALLFOLDER]wb2api-core.exe&quot; -config &quot;%USERPROFILE%\$(DataDirName)\config.json&quot;"
                   Execute="immediate" Return="asyncNoWait"/>
     <!-- 回滚后把（已还原的）旧版拉起来：WiX 的 rollback 动作在回滚脚本里**逆序**执行，
          因此必须锚定在序列**最早**处（InstallInitialize 之后），它才会在 InstallFiles
          的还原动作之后运行 —— 否则启动时文件还是新的/半新半旧。 -->
     <CustomAction Id="CaStartAppOnRollback" Directory="INSTALLFOLDER"
-                  ExeCommand="[SystemFolder]cmd.exe /c start &quot;&quot; &quot;[INSTALLFOLDER]wb2api-core.exe&quot; -config &quot;%USERPROFILE%\$(DataDirName)\config.json&quot;"
+                  ExeCommand="[SystemFolder]cmd.exe /c if not exist &quot;[INSTALLFOLDER]wb2api-core.exe&quot; if exist &quot;[INSTALLFOLDER]wb2api-core.exe.preupdate&quot; move /y &quot;[INSTALLFOLDER]wb2api-core.exe.preupdate&quot; &quot;[INSTALLFOLDER]wb2api-core.exe&quot; &amp; start &quot;&quot; &quot;[INSTALLFOLDER]wb2api-core.exe&quot; -config &quot;%USERPROFILE%\$(DataDirName)\config.json&quot;"
                   Execute="rollback" Impersonate="yes" Return="ignore"/>
     <?endif?>
 
+    <!-- 装文件**之前**把既有的 wb2api-core.exe 挪开。
+         为什么必须做：Go 产物没有 VERSIONINFO 资源，MSI 的「无版本号文件」规则在目标已存在时
+         会打 Won't Overwrite; Existing file is unversioned but modified 而**跳过复制**，
+         于是「绿色版 → MSI」首次迁移只会装上一堆周边文件、exe 还是旧的（2026-10-22 生产实测）。
+         备份而不是删除：万一 InstallFiles 之后失败，回滚动作能把 .preupdate 还原回去。 -->
+    <CustomAction Id="CaBackupOldCore" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]cmd.exe /c if exist &quot;[INSTALLFOLDER]wb2api-core.exe&quot; if not exist &quot;[INSTALLFOLDER]wb2api-core.exe.preupdate&quot; move /y &quot;[INSTALLFOLDER]wb2api-core.exe&quot; &quot;[INSTALLFOLDER]wb2api-core.exe.preupdate&quot;"
+                  Execute="deferred" Impersonate="yes" Return="ignore"/>
+
     <InstallExecuteSequence>
+      <!-- 备份旧 exe：必须在 InstallFiles 之前（见 CaBackupOldCore 注释）。 -->
+      <Custom Action="CaBackupOldCore" Before="InstallFiles" Condition="NOT REMOVE"/>
       <?if $(NoSideEffectCA) != "1" ?>
       <!-- 锚定 InstallInitialize 而不是 InstallFiles：后者在"已安装产品再装一次"的
            维护序列里可能根本不被调度，导致该动作被连带跳过（2026-10-03 VM 实测：
