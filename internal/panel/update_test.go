@@ -73,7 +73,7 @@ func TestUpdateManifestSourcesIncludeProxies(t *testing.T) {
 		t.Fatal("代理前缀列表为空：裸连 GitHub 不通时面板检查更新会失败")
 	}
 	var haveRelease bool
-	for _, s := range updateManifestSources {
+	for _, s := range manifestSourcesFor(ChannelStable) {
 		if s == updateGhReleaseManifest {
 			haveRelease = true
 		}
@@ -85,5 +85,78 @@ func TestUpdateManifestSourcesIncludeProxies(t *testing.T) {
 		if !strings.HasPrefix(px, "https://") || !strings.HasSuffix(px, "/") {
 			t.Errorf("代理前缀格式可疑: %q（需要 https:// 且以 / 结尾，才能直接拼完整 URL）", px)
 		}
+	}
+}
+
+// 预览通道：语义化比较（预发布 < 同号正式版；构建变体 -panel 与正式版同序）。
+func TestVersionComparePrerelease(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool // a 是否比 b 新
+	}{
+		{"1.11.25-preview.1", "1.11.24", true},
+		{"1.11.24", "1.11.24-preview.1", true},
+		{"1.11.24-preview.1", "1.11.24", false},
+		{"1.11.24-preview.2", "1.11.24-preview.1", true},
+		{"1.11.24-preview.1", "1.11.24-preview.1", false},
+		{"1.11.24", "1.11.24-panel", false}, // 构建变体后缀 = 同版
+		{"1.11.24-panel", "1.11.24", false},
+		{"1.11.24-rc.2", "1.11.24-preview.9", true}, // 同号预发布按字典序：preview < rc，故 rc 更新
+	}
+	for _, c := range cases {
+		if got := VersionNewer(c.a, c.b); got != c.want {
+			t.Errorf("VersionNewer(%q,%q)=%v want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// 通道 → 清单文件名 / 源集合。
+func TestManifestSourcesByChannel(t *testing.T) {
+	t.Setenv("WB2A_UPDATE_BASE", "")
+	if got := CurrentChannel(); got != ChannelStable {
+		t.Fatalf("默认通道应为 stable，实得 %q", got)
+	}
+	t.Setenv("WB2A_UPDATE_CHANNEL", "preview")
+	if got := CurrentChannel(); got != ChannelPreview {
+		t.Fatalf("env 应切到 preview，实得 %q", got)
+	}
+	t.Setenv("WB2A_UPDATE_CHANNEL", "garbage")
+	if got := CurrentChannel(); got != ChannelStable {
+		t.Fatalf("非法通道应回落 stable，实得 %q", got)
+	}
+
+	var stableHasRelease, previewHasRelease, previewHasPreviewJSON bool
+	for _, u := range manifestSourcesFor(ChannelStable) {
+		if u == updateGhReleaseManifest {
+			stableHasRelease = true
+		}
+	}
+	for _, u := range manifestSourcesFor(ChannelPreview) {
+		if u == updateGhReleaseManifest {
+			previewHasRelease = true
+		}
+		if strings.Contains(u, "preview.json") {
+			previewHasPreviewJSON = true
+		}
+	}
+	if !stableHasRelease {
+		t.Error("stable 通道应含 release/latest 直连源")
+	}
+	if previewHasRelease {
+		t.Error("preview 通道不应使用 releases/latest（它只指向最新非预发布）")
+	}
+	if !previewHasPreviewJSON {
+		t.Error("preview 通道的源里应包含 preview.json")
+	}
+
+	// WB2A_UPDATE_BASE 覆盖（隔离测试/内网镜像）必须按通道选文件名。
+	t.Setenv("WB2A_UPDATE_BASE", "http://127.0.0.1:18080/")
+	src := manifestSourcesFor(ChannelPreview)
+	if len(src) == 0 || src[0] != "http://127.0.0.1:18080/preview.json" {
+		t.Fatalf("覆盖源应为 preview.json，实得 %v", src[:1])
+	}
+	srcStable := manifestSourcesFor(ChannelStable)
+	if len(srcStable) == 0 || srcStable[0] != "http://127.0.0.1:18080/latest.json" {
+		t.Fatalf("stable 覆盖源应为 latest.json，实得 %v", srcStable[:1])
 	}
 }

@@ -2403,7 +2403,8 @@ function openUpdateDialog(d) {
   (q('updUrlRow')||{}).style.display = (avail && url) ? 'block' : 'none';
   (q('updUrl')||{}).value = url;
   (q('updCopy')||{}).style.display = (avail && url) ? 'inline-block' : 'none';
-  (q('updTitle')||{}).textContent = d.error ? '检查更新（失败）' : (avail ? '发现新版本 ' + (d.latest || '') : '检查更新');
+  const chan = d.channel === 'preview' ? '预览通道' : '稳定通道';
+  (q('updTitle')||{}).textContent = (d.error ? '检查更新（失败）' : (avail ? '发现新版本 ' + (d.latest || '') : '检查更新')) + '（' + chan + '）';
 }
 function updShow(d) {
   const b = $('updBadge'), t = $('updBadgeText');

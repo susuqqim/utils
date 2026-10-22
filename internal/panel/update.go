@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -20,8 +21,66 @@ import (
 	"workbuddy2api/internal/selfupdate"
 )
 
+// 清单文件名：稳定通道 latest.json；预览通道 preview.json（同一仓库 main 分支）。
+const (
+	ManifestStable  = "latest.json"
+	ManifestPreview = "preview.json"
+)
+
+// ChannelStable / ChannelPreview 更新通道。
+const (
+	ChannelStable  = "stable"
+	ChannelPreview = "preview"
+)
+
 // updateGhReleaseManifest GitHub Release 的 latest 清单地址（会再套代理前缀）。
 const updateGhReleaseManifest = "https://github.com/susuqqim/utils/releases/latest/download/latest.json"
+
+// CurrentChannel 返回当前更新通道：WB2A_UPDATE_CHANNEL=preview 才走预览通道，
+// 其余（未设/写错）一律按 stable 处理 —— 预览通道必须显式开启，避免误吃预发布。
+func CurrentChannel() string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WB2A_UPDATE_CHANNEL")), ChannelPreview) {
+		return ChannelPreview
+	}
+	return ChannelStable
+}
+
+// manifestNameFor 返回该通道对应的清单文件名。
+func manifestNameFor(channel string) string {
+	if channel == ChannelPreview {
+		return ManifestPreview
+	}
+	return ManifestStable
+}
+
+// manifestSourcesFor 构造该通道的候选源（直连 + Release 直连 + 代理前缀）。
+// 预览通道不加 Release 直连：github 的 releases/latest 只指向最新**非预发布**，
+// 预发布清单放 main 分支（raw / jsDelivr 可取），Release 里只放资产。
+func manifestSourcesFor(channel string) []string {
+	name := manifestNameFor(channel)
+	out := make([]string, 0, 8)
+	for _, tpl := range updateManifestSourceTemplates {
+		out = append(out, fmt.Sprintf(tpl, name))
+	}
+	if channel != ChannelPreview {
+		out = append(out, updateGhReleaseManifest)
+	}
+	// 自更新源覆盖：只认环境变量（面板不可改），供隔离测试/内网镜像。
+	if base := strings.TrimSpace(os.Getenv("WB2A_UPDATE_BASE")); base != "" {
+		if !strings.HasSuffix(base, "/") {
+			base += "/"
+		}
+		out = append([]string{base + name}, out...)
+	}
+	for _, px := range updateManifestProxies {
+		for _, u := range out[:len(out)] {
+			if strings.HasPrefix(u, "https://github.com/") {
+				out = append(out, px+u)
+			}
+		}
+	}
+	return out
+}
 
 // updateManifest 是 latest.json 的结构（与 scripts/update/*.ps1 一致）。
 type updateManifest struct {
@@ -47,16 +106,19 @@ type updateCheckResult struct {
 	// MSI 自更新（2026-10-22）：有 msi 段才能"一键更新"，否则面板只给下载链接。
 	MSI      *selfupdate.MSI `json:"msi,omitempty"`
 	CanApply bool            `json:"can_apply,omitempty"`
+
+	// Channel 当前更新通道（stable / preview）；面板据此显示预览版徽标。
+	Channel string `json:"channel,omitempty"`
 }
 
 var (
 	// B10：清单源必须与 scripts/update/wb2api-update.ps1 **同序同集合**。
 	// 此前 Go 侧只有 3 个直连源、没有代理前缀 ⇒ 裸连 GitHub 不通时面板"检查更新"
 	// 失败，而同一台机器上的 updater 却能成功（实测：curl raw 失败 / updater OK）。
-	updateManifestSources = []string{
-		"https://raw.githubusercontent.com/susuqqim/utils/main/latest.json",
-		"https://cdn.jsdelivr.net/gh/susuqqim/utils@main/latest.json",
-		updateGhReleaseManifest,
+	// 通道无关的两个直连源（%s 处填清单文件名）。
+	updateManifestSourceTemplates = []string{
+		"https://raw.githubusercontent.com/susuqqim/utils/main/%s",
+		"https://cdn.jsdelivr.net/gh/susuqqim/utils@main/%s",
 	}
 	// 与 PowerShell 侧相同的三个代理前缀（pp 前缀 + 完整 release URL）
 	updateManifestProxies = []string{
@@ -90,39 +152,137 @@ func leadingDigits(s string) int {
 	return n
 }
 
-// versionNewer 判断 a 是否比 b 新（按点分段、比较每段前导数字）。
-func versionNewer(a, b string) bool {
-	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
-	for i := 0; i < len(pa) || i < len(pb); i++ {
+// versionNewer 判断 a 是否比 b 新。
+//
+// 规则（语义化版本）：
+//  1. 先按点比较数值段（1.11.24 < 1.11.25）；
+//  2. 数值段相同再看预发布后缀：**带后缀的比不带后缀的旧**（1.11.24-preview.1 < 1.11.24）；
+//  3. 两边都带后缀时逐段比较（preview.2 > preview.1，数字段按数值比）。
+//
+// 为什么要这么细：预览通道（preview.json）会给出 1.11.25-preview.1 这类版本号，
+// 而稳定通道给 1.11.24；只比前导数字会把 1.11.24-preview.1 与 1.11.24 判成相等，
+// 导致稳定版用户被误提示降级、或预览用户升不到同号稳定版。
+func versionNewer(a, b string) bool { return compareVersion(a, b) > 0 }
+
+// compareVersion 返回 -1/0/1。
+func compareVersion(a, b string) int {
+	ca, pa := splitPre(a)
+	cb, pb := splitPre(b)
+	va, vb := strings.Split(ca, "."), strings.Split(cb, ".")
+	for i := 0; i < len(va) || i < len(vb); i++ {
 		var na, nb int
-		if i < len(pa) {
-			na = leadingDigits(pa[i])
+		if i < len(va) {
+			na = leadingDigits(va[i])
 		}
-		if i < len(pb) {
-			nb = leadingDigits(pb[i])
+		if i < len(vb) {
+			nb = leadingDigits(vb[i])
 		}
 		if na != nb {
-			return na > nb
+			if na > nb {
+				return 1
+			}
+			return -1
+		}
+	}
+	switch {
+	case pa == "" && pb == "":
+		return 0
+	case pa == "":
+		// a 无后缀；b 若是 -panel/-beta 这类**构建变体**后缀，视为同版；
+		// 只有 -preview.N/-rc.N 这类才是「比正式版旧」的预发布。
+		if !isPrereleaseSuffix(pb) {
+			return 0
+		}
+		return 1
+	case pb == "":
+		if !isPrereleaseSuffix(pa) {
+			return 0
+		}
+		return -1
+	}
+	ap, bp := isPrereleaseSuffix(pa), isPrereleaseSuffix(pb)
+	switch {
+	case !ap && !bp:
+		return 0
+	case ap && !bp:
+		return -1
+	case !ap && bp:
+		return 1
+	}
+	return comparePre(pa, pb)
+}
+
+// isPrereleaseSuffix 判断后缀是否为**预发布**（比同号正式版旧）：
+// preview / rc / alpha / beta。其它后缀（本项目惯用的 -panel）是构建变体，与正式版同序。
+func isPrereleaseSuffix(pre string) bool {
+	l := strings.ToLower(pre)
+	for _, k := range []string{"preview", "rc", "alpha", "beta"} {
+		if strings.HasPrefix(l, k) {
+			return true
 		}
 	}
 	return false
 }
 
+// splitPre 把 "1.11.24-preview.1" 拆成 ("1.11.24", "preview.1")。
+func splitPre(v string) (core, pre string) {
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		return v[:i], v[i+1:]
+	}
+	return v, ""
+}
+
+// comparePre 比较两个预发布串（点分段：数字段按数值，其余按字典序）。
+func comparePre(a, b string) int {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		if i >= len(pa) {
+			return -1
+		}
+		if i >= len(pb) {
+			return 1
+		}
+		na, aNum := parseAllDigits(pa[i])
+		nb, bNum := parseAllDigits(pb[i])
+		if aNum && bNum {
+			if na != nb {
+				if na > nb {
+					return 1
+				}
+				return -1
+			}
+			continue
+		}
+		if pa[i] != pb[i] {
+			if pa[i] > pb[i] {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+// parseAllDigits 判断整段是否纯数字。
+func parseAllDigits(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
 // fetchUpdateManifest 依次尝试各源；全部失败返回错误。
 func fetchUpdateManifest(ctx context.Context) (updateManifest, string, error) {
-	// 直连源 + 代理源（代理只对 GitHub Release URL 有意义）
-	sources := append([]string{}, updateManifestSources...)
-	// 自更新源覆盖：**只认环境变量**（面板不可改，避免被远程把更新源指向恶意地址）。
-	// 用途：隔离测试（本地 HTTP 源）与内网镜像部署。生产默认走 GitHub 三源。
-	if base := strings.TrimSpace(os.Getenv("WB2A_UPDATE_BASE")); base != "" {
-		if !strings.HasSuffix(base, "/") {
-			base += "/"
-		}
-		sources = append([]string{base + "latest.json"}, sources...)
-	}
-	for _, px := range updateManifestProxies {
-		sources = append(sources, px+updateGhReleaseManifest)
-	}
+	// 按通道生成候选源（stable=latest.json / preview=preview.json）。
+	sources := manifestSourcesFor(CurrentChannel())
+
 	var lastErr error
 	for _, u := range sources {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -167,7 +327,7 @@ func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheck
 	}
 	updateCacheMu.Unlock()
 
-	res := updateCheckResult{Current: current, CheckedAt: time.Now().Format(time.RFC3339)}
+	res := updateCheckResult{Current: current, CheckedAt: time.Now().Format(time.RFC3339), Channel: CurrentChannel()}
 	m, _, err := fetchUpdateManifest(ctx)
 	if err != nil {
 		res.Error = err.Error()
