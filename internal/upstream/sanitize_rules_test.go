@@ -39,7 +39,7 @@ func TestRewriteRulesAreAsciiOnly(t *testing.T) {
 
 // DSH 的 GUI 描述段必须被真正改写掉（这是 CN 域 11128 的稳定指纹）。
 func TestGUISentenceRewritten(t *testing.T) {
-	in := "You are interacting with the user through the DeepSeek Harness Web GUI at the local address shown above. When the user refers to \"this page\", they mean this GUI."
+	in := "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to \"this page\", they mean this GUI."
 	if !hasFingerprint(in) {
 		t.Fatal("预检必须命中该指纹，否则整单跳过净化")
 	}
@@ -47,7 +47,7 @@ func TestGUISentenceRewritten(t *testing.T) {
 	if out == in {
 		t.Fatal("改写后内容未变化 —— 规则没生效")
 	}
-	if strings.Contains(out, "at the local address shown above") {
+	if strings.Contains(out, "whose URL the runtime context names") {
 		t.Fatalf("改写后仍残留 GUI 指纹：%q", out)
 	}
 	if !strings.Contains(out, "whose URL is named in the runtime context") {

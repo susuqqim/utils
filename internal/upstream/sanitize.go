@@ -83,7 +83,7 @@ var sanitizeRewrites = [][2]string{
 		// DSH 新版 system prompt 把 GUI 地址写成「由 runtime context 命名」的从句，
 		// 上游据此判定非官方客户端。改写成中性表述后同一请求 5/5 由 400 变 200。
 		// 只替换这一个从句（不动整句/其它 "runtime context" 出现处），最小侵入。
-		"at the local address shown above",
+		"whose URL the runtime context names",
 		"whose URL is named in the runtime context",
 	},
 	{
