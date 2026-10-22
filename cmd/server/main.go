@@ -479,6 +479,13 @@ func main() {
 		// 仅测试：允许 http 更新源（配 WB2A_UPDATE_BASE 指向本地 http://127.0.0.1:18080）。
 		// 生产不设该变量 ⇒ 强制 https（防降级/中间人）。
 		AllowHTTP: os.Getenv("WB2A_UPDATE_ALLOW_HTTP") == "1",
+		// 国内直连 GitHub Release 经常下不完（实测 3.6MB 包只拉到 1MB），
+		// 主地址失败/校验不符时依次试这些镜像前缀；最终仍以 SHA256 为准。
+		Mirrors: []string{
+			"https://ghproxy.net/",
+			"https://gh-proxy.com/",
+			"https://mirror.ghproxy.com/",
+		},
 	})
 	// 启动对账：上次"已派生 msiexec"但没等到重启的状态在这里收尾。
 	if st := applier.Reconcile(appVersion); st.Stage != selfupdate.StageIdle {

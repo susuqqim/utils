@@ -1,6 +1,7 @@
 package selfupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -301,5 +302,92 @@ func TestApplyEarlyInstallFailureKeepsService(t *testing.T) {
 	// 早失败必须释放锁：否则用户重试永远 409。
 	if _, statErr := os.Stat(a.lockPath()); !os.IsNotExist(statErr) {
 		t.Errorf("早失败后锁应释放，实际 %v", statErr)
+	}
+}
+
+// 断点续传：已有 .part 时应带 Range 续传，最终哈希覆盖整份文件。
+func TestDownloadResumesFromPartial(t *testing.T) {
+	body := bytes.Repeat([]byte("abcdefgh"), 4096) // 32KB
+	sum := sha256.Sum256(body)
+	sha := hex.EncodeToString(sum[:])
+	half := len(body) / 2
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rng := r.Header.Get("Range")
+		if rng == "" {
+			t.Error("续传请求必须带 Range 头")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+			return
+		}
+		var from int
+		if _, err := fmt.Sscanf(rng, "bytes=%d-", &from); err != nil {
+			t.Errorf("Range 解析失败: %v", err)
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", from, len(body)-1, len(body)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(body[from:])
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	a := newApplier(t, dir, spawnOK)
+	upd := filepath.Join(dir, ".update")
+	if err := os.MkdirAll(upd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(upd, "x.msi.part"), body[:half], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := State{Stage: StageDownload, To: "1.11.20"}
+	p, got, err := a.downloadFrom(context.Background(), srv.URL, MSI{Name: "x.msi", URL: srv.URL, SHA256: sha, Size: int64(len(body))}, &st)
+	if err != nil {
+		t.Fatalf("downloadFrom: %v", err)
+	}
+	if got != sha {
+		t.Errorf("哈希不符: got %s want %s", got[:12], sha[:12])
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, body) {
+		t.Errorf("续传后文件内容不一致：len=%d want %d", len(data), len(body))
+	}
+}
+
+// 主地址失败（500）时应自动落到镜像前缀。
+func TestApplyFallsBackToMirror(t *testing.T) {
+	body := []byte("mirror-body")
+	sum := sha256.Sum256(body)
+	sha := hex.EncodeToString(sum[:])
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer primary.Close()
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer mirror.Close()
+
+	dir := t.TempDir()
+	// 镜像前缀 = mirror 地址 + "/"；候选 URL 变成 mirror/<primaryURL>，路径无所谓
+	a := New(Options{DataDir: dir, InstallDir: dir, AllowHTTP: true, Spawn: spawnOK,
+		EarlyExitWindow: 40 * time.Millisecond, Mirrors: []string{mirror.URL},
+		HTTP: &http.Client{Timeout: 20 * time.Second}, Now: time.Now,
+		DiskFree: func(string) (int64, error) { return 1 << 40, nil }, MinFree: 1})
+	st, err := a.Apply(context.Background(), "1.11.19", "1.11.20", MSI{
+		Name: "m.msi", URL: primary.URL, SHA256: sha, Size: int64(len(body)),
+	})
+	if err != nil {
+		t.Fatalf("应回退到镜像成功，实际 err=%v", err)
+	}
+	if st.MSIPath == "" {
+		t.Fatal("msi_path 应已写入")
+	}
+	if _, err := os.Stat(st.MSIPath); err != nil {
+		t.Fatalf("下载文件不存在: %v", err)
 	}
 }

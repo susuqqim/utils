@@ -92,7 +92,11 @@ type Options struct {
 	// EarlyExitWindow 派生安装程序后观察"是否立刻失败"的窗口（默认 1.2s）。
 	// 覆盖：坏包 1620、被 HIPS/策略拦截、权限不足 —— 这些都在 1s 内返回非 0。
 	EarlyExitWindow time.Duration
-	ProgressEvery   int // 每上涨多少个百分点落一次状态（默认 10）
+	// Mirrors 下载镜像前缀（如 https://ghproxy.net/），在主地址失败/校验不符时依次尝试。
+	Mirrors []string
+	// DownloadAttempts 每个地址的最大尝试次数（含续传重试），默认 3。
+	DownloadAttempts int
+	ProgressEvery    int // 每上涨多少个百分点落一次状态（默认 10）
 }
 
 // Applier 是自更新的执行器。并发安全：Apply 之间用 busy 标志互斥。
@@ -126,6 +130,9 @@ func New(opt Options) *Applier {
 	}
 	if opt.EarlyExitWindow <= 0 {
 		opt.EarlyExitWindow = 1200 * time.Millisecond
+	}
+	if opt.DownloadAttempts <= 0 {
+		opt.DownloadAttempts = 3
 	}
 	return &Applier{opt: opt, st: State{Stage: StageIdle, Percent: 0}}
 }
@@ -322,21 +329,43 @@ func (a *Applier) Apply(ctx context.Context, current, target string, m MSI) (Sta
 	}
 
 	a.setState(st)
-	msiPath, err := a.download(ctx, m, &st)
-	if err != nil {
-		st.Stage, st.Error = StageFailed, err.Error()
-		a.setState(st)
-		return a.State(), err
+	// 多源下载：主地址失败/校验不符就换镜像；同一地址允许续传重试。
+	// 国内直连 GitHub Release 经常几 MB 都下不完，没有这层就永远更新不了。
+	msiPath := ""
+	var lastErr error
+	for _, u := range a.candidateURLs(m.URL) {
+		for attempt := 1; attempt <= a.opt.DownloadAttempts; attempt++ {
+			p, _, derr := a.downloadFrom(ctx, u, m, &st)
+			if derr == nil {
+				msiPath = p
+				break
+			}
+			lastErr = derr
+			if errors.Is(derr, ErrChecksum) {
+				break // 内容不对，换下一个源（.part 已删除）
+			}
+			if attempt < a.opt.DownloadAttempts {
+				select {
+				case <-ctx.Done():
+					lastErr = ctx.Err()
+				case <-time.After(400 * time.Millisecond):
+				}
+			}
+		}
+		if msiPath != "" {
+			break
+		}
 	}
-
+	if msiPath == "" {
+		if lastErr == nil {
+			lastErr = ErrChecksum
+		}
+		st.Stage, st.Error = StageFailed, lastErr.Error()
+		a.setState(st)
+		return a.State(), lastErr
+	}
 	st.Stage, st.Percent = StageVerify, 100
 	a.setState(st)
-	if err := verifyFile(msiPath, m.SHA256); err != nil {
-		_ = os.Remove(msiPath)
-		st.Stage, st.Error = StageFailed, err.Error()
-		a.setState(st)
-		return a.State(), err
-	}
 
 	if a.opt.Spawn == nil {
 		st.Stage, st.Error = StageFailed, ErrNotRunnable.Error()
@@ -366,11 +395,13 @@ func (a *Applier) Apply(ctx context.Context, current, target string, m MSI) (Sta
 	return a.State(), nil
 }
 
-// download 流式下载并边下边算 SHA256，按百分比节流落盘状态。
-func (a *Applier) download(ctx context.Context, m MSI, st *State) (string, error) {
+// downloadFrom 从单个 URL 流式下载到 .update/<name>，边下边算 SHA256。
+// 支持**断点续传**：已有 .part 时发 Range 请求（206 追加、200 从头再来），
+// 失败时保留 .part 供下一次尝试继续 —— 本国网络下 3MB 常常一次下不完。
+func (a *Applier) downloadFrom(ctx context.Context, urlStr string, m MSI, st *State) (string, string, error) {
 	dir := filepath.Join(a.opt.InstallDir, ".update")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+		return "", "", err
 	}
 	name := filepath.Base(m.Name)
 	if name == "" || name == "." || name == string(filepath.Separator) {
@@ -379,38 +410,70 @@ func (a *Applier) download(ctx context.Context, m MSI, st *State) (string, error
 	dst := filepath.Join(dir, name)
 	part := dst + ".part"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.URL, nil)
+	var start int64
+	if fi, err := os.Stat(part); err == nil {
+		start = fi.Size()
+	}
+
+	f, err := os.OpenFile(part, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if start > 0 {
+		// 先把已落盘部分喂给哈希，保证最终哈希覆盖整份文件。
+		if _, err := io.Copy(h, io.LimitReader(f, start)); err != nil {
+			_ = os.Remove(part)
+			return "", "", err
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return "", "", err
+	}
+	if start > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
 	}
 	resp, err := a.opt.HTTP.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("下载失败: %w", err)
+		return "", "", fmt.Errorf("下载失败: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		// 续传成功，保留已写入部分
+	case http.StatusOK:
+		if start > 0 { // 服务器不支持 Range：整份重下
+			h.Reset()
+			if err := f.Truncate(0); err != nil {
+				_ = os.Remove(part)
+				return "", "", err
+			}
+			start = 0
+		}
+	default:
+		return "", "", fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return "", "", err
 	}
 
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return "", err
-	}
-	h := sha256.New()
 	total := m.Size
-	if total <= 0 && resp.ContentLength > 0 {
-		total = resp.ContentLength
+	if resp.ContentLength > 0 {
+		total = start + resp.ContentLength
 	}
 	buf := make([]byte, 64<<10)
-	var written int64
+	written := start
 	lastPct := -1
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := f.Write(buf[:n]); werr != nil {
-				_ = f.Close()
-				_ = os.Remove(part)
-				return "", werr
+				return "", "", werr
 			}
 			h.Write(buf[:n])
 			written += int64(n)
@@ -427,24 +490,37 @@ func (a *Applier) download(ctx context.Context, m MSI, st *State) (string, error
 			break
 		}
 		if rerr != nil {
-			_ = f.Close()
-			_ = os.Remove(part)
-			return "", fmt.Errorf("下载中断: %w", rerr)
+			// 保留 .part，下一次尝试从这里续传
+			return "", "", fmt.Errorf("下载中断（已存 %d 字节）: %w", written, rerr)
 		}
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	want := strings.ToLower(strings.TrimSpace(m.SHA256))
+	if subtle.ConstantTimeCompare([]byte(sum), []byte(want)) != 1 {
+		_ = os.Remove(part)
+		return "", sum, fmt.Errorf("%w（实际 %s）", ErrChecksum, sum[:12])
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(part)
-		return "", err
-	}
-	sum := hex.EncodeToString(h.Sum(nil))
-	if want := strings.ToLower(strings.TrimSpace(m.SHA256)); subtle.ConstantTimeCompare([]byte(sum), []byte(want)) != 1 {
-		_ = os.Remove(part)
-		return "", fmt.Errorf("%w（实际 %s）", ErrChecksum, sum[:12])
+		return "", "", err
 	}
 	if err := os.Rename(part, dst); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return dst, nil
+	return dst, sum, nil
+}
+
+// candidateURLs 返回下载候选：主地址 + 各镜像前缀（顺序即优先级）。
+func (a *Applier) candidateURLs(primary string) []string {
+	out := []string{primary}
+	for _, px := range a.opt.Mirrors {
+		px = strings.TrimSpace(px)
+		if px == "" {
+			continue
+		}
+		out = append(out, strings.TrimRight(px, "/")+"/"+primary)
+	}
+	return out
 }
 
 // validateMSI 校验清单字段；scheme 默认强制 https（AllowHTTP 仅供测试）。
