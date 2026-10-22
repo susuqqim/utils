@@ -45,7 +45,10 @@ func TestPanelRouteInventory(t *testing.T) {
 		"POST /panel/api/tasks/scan_all", "POST /panel/api/tasks/run_queue",
 		"POST /panel/api/checkin_all",
 		"GET /panel/api/model-locks",
-		"GET /panel/api/update/check", // 只读：拉 latest.json 比对版本，不改任何状态
+		"GET /panel/api/update/check",    // 只读：拉 latest.json 比对版本，不改任何状态
+		"GET /panel/api/update/progress", // 只读：读进程内/落盘的更新状态（stage/percent）
+		// 改状态：下载 MSI 并派生 msiexec（POST，天然落在非 GET 的 CSRF 口径里）
+		"POST /panel/api/update/apply",
 		// 只读：按模型查上游 /v2/chat/queue/status 的排队状态，仅读取，不改任何状态；
 		// 结果写进进程内 2 分钟缓存（缓存不是"状态变更"，无需 CSRF 白名单）。
 		"GET /panel/api/model-queue",

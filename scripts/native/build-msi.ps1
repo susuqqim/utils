@@ -14,6 +14,8 @@
 
 param(
   [string]$Version = "",
+  # Optional: payload core exe (default: release/native/wb2api-windows-amd64.exe).
+  [string]$CoreExe = "",
   [string]$OutDir  = "",
   [string]$InstallDirName = "workbuddy2api",
   [string]$MsiSuffix = "",
@@ -25,6 +27,20 @@ param(
   # running production -- on 2026-10-02 the uninstall of such a package killed the
   # production process via `taskkill /IM wb2api-core.exe /F`.
   [switch]$NoSideEffectCA,
+  # 产品身份与数据目录名。默认值 = 生产；做"测试 MSI"时**必须**同时换掉
+  # UpgradeCode 与 InstallDirName：MSI 按 UpgradeCode 认产品，沿用生产 GUID
+  # 的测试包会被当成"同一产品的升级"，直接升级/卸载生产安装（灾难级）。
+  [string]$UpgradeCode = "8F3B2C1A-7D4E-4A9B-9C21-5E6F7A8B9C0D",
+  [string]$DataDirName = ".workbuddy2api",
+  # 开始菜单文件夹名（测试包另起名，避免与生产快捷方式同名互相覆盖/误启动）。
+  [string]$AppFolderName = "WorkBuddy2API",
+  # 面板端口（只影响 .url 快捷方式指向；测试实例用 17980）。
+  [string]$PanelPort = "17963",
+  # 测试包不写用户 PATH，并给注册表标记加后缀避免与生产同名覆盖。
+  [switch]$SkipPathEnv,
+  [string]$PathMarkerSuffix = "",
+  # 只部署文件、不自动拉起程序（默认安装成功后由 CaStartApp 启动网关）。
+  [switch]$SkipStartCA,
   [switch]$KeepStage
 )
 
@@ -71,7 +87,9 @@ $stage = Join-Path $native '.msi-stage'
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-$coreSrc = Join-Path $native 'wb2api-windows-amd64.exe'
+if (-not $CoreExe) { $CoreExe = Join-Path $native 'wb2api-windows-amd64.exe' }
+if (-not (Test-Path $CoreExe)) { throw "missing core exe: $CoreExe" }
+$coreSrc = (Resolve-Path $CoreExe).Path
 if (-not (Test-Path $coreSrc)) {
   throw "missing $coreSrc -- run scripts/native/build-native.sh first"
 }
@@ -109,21 +127,33 @@ Copy-Item (Join-Path $src 'internal\tray\icon.ico') (Join-Path $stage 'wb2api.ic
 # 3.5 panel URL shortcut target (InternetShortcut .url, opens the browser without a console)
 # IconFile 用**相对路径**：.url 与 wb2api.ico 都装在安装目录里，任何用户/安装位置都能取到。
 # （写绝对路径会把构建机的 staging 路径烧进用户的 .url，图标必然失效且泄露构建机路径。）
-$urlTxt = "[InternetShortcut]`r`nURL=http://127.0.0.1:17963/panel/`r`nIconFile=wb2api.ico`r`nIconIndex=0`r`n"
+$urlTxt = "[InternetShortcut]`r`nURL=http://127.0.0.1:$PanelPort/panel/`r`nIconFile=wb2api.ico`r`nIconIndex=0`r`n"
 [IO.File]::WriteAllText((Join-Path $stage 'wb2api-panel.url'), $urlTxt, (New-Object Text.UTF8Encoding($false)))
 
 # 4) Build.
 $msi = Join-Path $OutDir ("workbuddy2api-$Version-x64$MsiSuffix.msi")
 $noSideEffect = if ($NoSideEffectCA) { "1" } else { "0" }
+$skipStart    = if ($SkipStartCA) { "1" } else { "0" }
+$skipPath     = if ($SkipPathEnv) { "1" } else { "0" }
 if ($NoSideEffectCA) {
   Write-Host "==> TEST MSI: side-effect custom actions stripped (autostart / taskkill / rmdir)" -ForegroundColor Yellow
 }
+if ($UpgradeCode -ne "8F3B2C1A-7D4E-4A9B-9C21-5E6F7A8B9C0D") {
+  Write-Host "==> TEST MSI: UpgradeCode=$UpgradeCode (NOT the production product identity)" -ForegroundColor Yellow
+}
+Write-Host "==> InstallDirName=$InstallDirName  DataDirName=$DataDirName  StartAppCA=$([int](-not $SkipStartCA))"
 $buildArgs = @(
   'build', '-arch', 'x64',
   '-d', "Version=$Version",
   '-d', "StageDir=$stage",
   '-d', "InstallDirName=$InstallDirName",
   '-d', "NoSideEffectCA=$noSideEffect",
+  '-d', "UpgradeCode=$UpgradeCode",
+  '-d', "DataDirName=$DataDirName",
+  '-d', "SkipStartCA=$skipStart",
+  '-d', "AppFolderName=$AppFolderName",
+  '-d', "SkipPathEnv=$skipPath",
+  '-d', "PathMarkerSuffix=$PathMarkerSuffix",
   '-o', $msi,
   # 把 WiX 调试符号(.wixpdb)重定向进 staging，随 staging 一起删除，保持发行目录干净
   '-pdb', (Join-Path $stage 'wb2api.wixpdb'),

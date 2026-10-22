@@ -22,7 +22,7 @@
   <Package Name="WorkBuddy2API"
            Manufacturer="WorkBuddy2API"
            Version="$(Version)"
-           UpgradeCode="8F3B2C1A-7D4E-4A9B-9C21-5E6F7A8B9C0D"
+           UpgradeCode="$(UpgradeCode)"
            Scope="perUser"
            Compressed="yes"
            Language="2052">
@@ -58,7 +58,8 @@
       <Directory Id="INSTALLFOLDER" Name="$(InstallDirName)"/>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="AppShortcutFolder" Name="WorkBuddy2API"/>
+      <!-- 开始菜单文件夹名参数化：测试包用别的名字，避免与生产快捷方式同名互相覆盖/误启动。 -->
+      <Directory Id="AppShortcutFolder" Name="$(AppFolderName)"/>
     </StandardDirectory>
     <StandardDirectory Id="DesktopFolder"/>
 
@@ -122,10 +123,13 @@
         <File Id="filVersionTxt" Source="$(StageDir)\version.txt"/>
         <File Id="filSetupKey" Source="$(StageDir)\setup-key.ps1"/>
       </Component>
+      <!-- $(SkipPathEnv)=1：测试包不碰用户 PATH（避免与生产条目重复/残留）。 -->
       <Component Id="cmpPath" Guid="{38A18344-D741-5D0C-E328-D78AD100A9F9}">
+        <?if $(SkipPathEnv) != "1" ?>
         <Environment Id="EnvPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last"
                      Action="set" System="no" Permanent="no"/>
-        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API" Name="PathInstalled"
+        <?endif?>
+        <RegistryValue Root="HKCU" Key="Software\WorkBuddy2API" Name="PathInstalled$(PathMarkerSuffix)"
                        Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </ComponentGroup>
@@ -202,15 +206,43 @@
          拆成两条 CA：WiX 的 CustomAction.Target 列有长度上限，单条塞 530+ 字符会触发
          ICE03（String overflow），存在被工具链截断的隐患。 -->
     <CustomAction Id="CaSeedDataDir" Directory="INSTALLFOLDER"
-                  ExeCommand="[SystemFolder]cmd.exe /c mkdir &quot;%USERPROFILE%\.workbuddy2api\auths&quot; &quot;%USERPROFILE%\.workbuddy2api\data&quot; &quot;%USERPROFILE%\.workbuddy2api\logs&quot; 2&gt;nul"
+                  ExeCommand="[SystemFolder]cmd.exe /c mkdir &quot;%USERPROFILE%\$(DataDirName)\auths&quot; &quot;%USERPROFILE%\$(DataDirName)\data&quot; &quot;%USERPROFILE%\$(DataDirName)\logs&quot; 2&gt;nul"
                   Execute="deferred" Impersonate="yes" Return="ignore"/>
     <CustomAction Id="CaSeedConfig" Directory="INSTALLFOLDER"
-                  ExeCommand="[SystemFolder]cmd.exe /c if not exist &quot;%USERPROFILE%\.workbuddy2api\config.json&quot; copy /y &quot;[INSTALLFOLDER]config.example.json&quot; &quot;%USERPROFILE%\.workbuddy2api\config.json&quot;"
+                  ExeCommand="[SystemFolder]cmd.exe /c if not exist &quot;%USERPROFILE%\$(DataDirName)\config.json&quot; copy /y &quot;[INSTALLFOLDER]config.example.json&quot; &quot;%USERPROFILE%\$(DataDirName)\config.json&quot;"
                   Execute="deferred" Impersonate="yes" Return="ignore"/>
     <!-- 可选：连数据目录一起删（默认保留用户数据） -->
     <CustomAction Id="CaRemoveData" Directory="INSTALLFOLDER"
-                  ExeCommand="[SystemFolder]cmd.exe /c rd /s /q &quot;%USERPROFILE%\.workbuddy2api&quot;"
+                  ExeCommand="[SystemFolder]cmd.exe /c rd /s /q &quot;%USERPROFILE%\$(DataDirName)&quot;"
                   Execute="deferred" Impersonate="yes" Return="ignore"/>
+    <?endif?>
+
+    <!-- 安装成功后**启动程序**（immediate + After=InstallFinalize + asyncNoWait）。
+         为什么经 cmd.exe /c start 而不是直接 FileRef：
+           ① MSI 的 ExeCommand **不展开 %USERPROFILE%**（只展开 [Property]），直连会把
+             字面量 %USERPROFILE% 传给 -config，进程起不来（2026-10-22 实测：CA 返回 0
+              但无进程、17980 不监听）；
+           ② cmd 的 start 让子进程脱离 MSI 安装事务的作业对象，安装器退出时不会被带走。
+         ⚠️ 不能用 Execute="commit"：commit/deferred 型自定义动作必须排在
+         InstallInitialize..InstallFinalize **之间**，排在 InstallFinalize 之后会被 MSI
+         判为 Error 2762 并让整次安装以 1603 失败（2026-10-22 实测，日志见 .checkpoints）。
+         为什么必须有它：MSI 装完原本没有任何动作拉起网关，只能等下次登录由
+         HKCU\...\Run 的 WorkBuddy2API 项启动 —— 对"面板一键自更新"是致命的
+         （2026-10-22 设计记录，见 工作区文档/自更新方案-20261022.md §3）。
+         · 命令行与 wb2api.cmd start 等价：核心 exe + 绝对 -config（进程启动后
+           会 chdir 到 config 所在目录，见路线图 §O）；不带 run/start 子命令，
+           控制台隐藏与否仍由 ui.tray 决定。
+         · $(SkipStartCA)=1 可单独剔除（只做文件部署 / 由外部脚本负责启动的场景）。 -->
+    <?if $(SkipStartCA) != "1" ?>
+    <CustomAction Id="CaStartApp" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]cmd.exe /c start &quot;&quot; &quot;[INSTALLFOLDER]wb2api-core.exe&quot; -config &quot;%USERPROFILE%\$(DataDirName)\config.json&quot;"
+                  Execute="immediate" Return="asyncNoWait"/>
+    <!-- 回滚后把（已还原的）旧版拉起来：WiX 的 rollback 动作在回滚脚本里**逆序**执行，
+         因此必须锚定在序列**最早**处（InstallInitialize 之后），它才会在 InstallFiles
+         的还原动作之后运行 —— 否则启动时文件还是新的/半新半旧。 -->
+    <CustomAction Id="CaStartAppOnRollback" Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]cmd.exe /c start &quot;&quot; &quot;[INSTALLFOLDER]wb2api-core.exe&quot; -config &quot;%USERPROFILE%\$(DataDirName)\config.json&quot;"
+                  Execute="rollback" Impersonate="yes" Return="ignore"/>
     <?endif?>
 
     <InstallExecuteSequence>
@@ -228,6 +260,12 @@
       <Custom Action="CaStopApp" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot;"/>
       <Custom Action="CaRemoveData" After="RemoveFiles"
               Condition="REMOVE~=&quot;ALL&quot; AND REMOVEDATA=&quot;1&quot;"/>
+      <?endif?>
+      <?if $(SkipStartCA) != "1" ?>
+      <!-- 启动：commit 动作排在 InstallFinalize 之后，安装成功才执行；卸载（REMOVE）不启动。 -->
+      <Custom Action="CaStartApp" After="InstallFinalize" Condition="NOT REMOVE"/>
+      <!-- 回滚启动：锚定最早位置，保证在文件还原之后运行（见上一条注释）。 -->
+      <Custom Action="CaStartAppOnRollback" After="InstallInitialize" Condition="NOT REMOVE"/>
       <?endif?>
     </InstallExecuteSequence>
 

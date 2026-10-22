@@ -12,9 +12,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"workbuddy2api/internal/selfupdate"
 )
 
 // updateGhReleaseManifest GitHub Release 的 latest 清单地址（会再套代理前缀）。
@@ -26,6 +29,8 @@ type updateManifest struct {
 	SHA256  string   `json:"sha256"`
 	Size    int64    `json:"size"`
 	URLs    []string `json:"urls"`
+	// MSI 自更新段（2026-10-22 新增）：缺省时退化为"只提示 + 给下载链接"。
+	MSI *selfupdate.MSI `json:"msi,omitempty"`
 }
 
 // updateCheckResult 是给面板的响应。
@@ -38,6 +43,10 @@ type updateCheckResult struct {
 	Size      int64  `json:"size,omitempty"`
 	CheckedAt string `json:"checked_at"`
 	Error     string `json:"error,omitempty"` // 取清单失败的原因（面板显示"检查失败"）
+
+	// MSI 自更新（2026-10-22）：有 msi 段才能"一键更新"，否则面板只给下载链接。
+	MSI      *selfupdate.MSI `json:"msi,omitempty"`
+	CanApply bool            `json:"can_apply,omitempty"`
 }
 
 var (
@@ -103,6 +112,14 @@ func versionNewer(a, b string) bool {
 func fetchUpdateManifest(ctx context.Context) (updateManifest, string, error) {
 	// 直连源 + 代理源（代理只对 GitHub Release URL 有意义）
 	sources := append([]string{}, updateManifestSources...)
+	// 自更新源覆盖：**只认环境变量**（面板不可改，避免被远程把更新源指向恶意地址）。
+	// 用途：隔离测试（本地 HTTP 源）与内网镜像部署。生产默认走 GitHub 三源。
+	if base := strings.TrimSpace(os.Getenv("WB2A_UPDATE_BASE")); base != "" {
+		if !strings.HasSuffix(base, "/") {
+			base += "/"
+		}
+		sources = append([]string{base + "latest.json"}, sources...)
+	}
 	for _, px := range updateManifestProxies {
 		sources = append(sources, px+updateGhReleaseManifest)
 	}
@@ -162,6 +179,8 @@ func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheck
 		if len(m.URLs) > 0 {
 			res.URL = m.URLs[0]
 		}
+		res.MSI = m.MSI
+		res.CanApply = m.MSI != nil
 	}
 	updateCacheMu.Lock()
 	updateCache, updateCacheAt = res, time.Now()
@@ -183,3 +202,63 @@ func (p *Panel) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 var errUpdateManifestEmpty = errors.New("update manifest: 清单为空或缺少 version")
+
+// ErrUpdateInFlight 由 main 在"有在途请求"时返回：面板把它映射成 409，
+// 提示用户稍后再更新（更新会重启网关，不能打断正在跑的对话）。
+var ErrUpdateInFlight = errors.New("有请求正在处理中，请稍后再更新（会重启网关）")
+
+// FetchForApply 为"立即更新"**强制**拉一次最新清单（不走 5 分钟缓存），
+// 返回 msi 段与目标版本 —— 避免用户点了更新却拿到缓存里的旧包地址。
+func FetchForApply(ctx context.Context) (selfupdate.MSI, string, error) {
+	m, _, err := fetchUpdateManifest(ctx)
+	if err != nil {
+		return selfupdate.MSI{}, "", err
+	}
+	if m.MSI == nil {
+		return selfupdate.MSI{}, m.Version, selfupdate.ErrNoMSI
+	}
+	return *m.MSI, m.Version, nil
+}
+
+// handleUpdateProgress：GET /panel/api/update/progress
+func (p *Panel) handleUpdateProgress(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.UpdateProgress == nil {
+		writeJSON(w, http.StatusOK, selfupdate.State{Stage: selfupdate.StageIdle})
+		return
+	}
+	writeJSON(w, http.StatusOK, p.cfg.UpdateProgress())
+}
+
+// handleUpdateApply：POST /panel/api/update/apply
+//
+// 语义：成功即代表**已派生 msiexec**，网关随后退出，由 MSI 的 CaStartApp 拉起新版；
+// 面板此时会断连，重连后读 /update/progress 续显（状态已落盘）。
+func (p *Panel) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.ApplyUpdate == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{
+			"code": "not_applicable", "error": "当前形态不支持程序内自更新（Docker 请拉新镜像；非 Windows 平台不支持 MSI）",
+			"message": "当前形态不支持程序内自更新（Docker 请拉新镜像；非 Windows 平台不支持 MSI）",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	defer cancel()
+	st, err := p.cfg.ApplyUpdate(ctx)
+	if err != nil {
+		code, raw := http.StatusBadRequest, "update_failed"
+		switch {
+		case errors.Is(err, selfupdate.ErrBusy), errors.Is(err, ErrUpdateInFlight):
+			code, raw = http.StatusConflict, "update_busy"
+		case errors.Is(err, selfupdate.ErrNoMSI), errors.Is(err, selfupdate.ErrNotRunnable):
+			code, raw = http.StatusNotImplemented, "not_applicable"
+		case errors.Is(err, selfupdate.ErrScheme), errors.Is(err, selfupdate.ErrBadMSI):
+			code, raw = http.StatusBadGateway, "bad_manifest"
+		}
+		writeJSON(w, code, map[string]any{"code": raw, "message": err.Error(), "error": err.Error(), "state": st})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": st.To, "state": st})
+}
+
+// VersionNewer 导出给 main 装配用（与面板徽标/更新检查同一套版本语义）。
+func VersionNewer(a, b string) bool { return versionNewer(a, b) }

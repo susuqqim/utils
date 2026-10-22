@@ -31,6 +31,7 @@ import (
 	"workbuddy2api/internal/pool"
 	"workbuddy2api/internal/redisstore"
 	"workbuddy2api/internal/scheduler"
+	"workbuddy2api/internal/selfupdate"
 	"workbuddy2api/internal/server"
 	"workbuddy2api/internal/session"
 	"workbuddy2api/internal/tray"
@@ -39,7 +40,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.19-panel"
+const appVersion = "1.11.20-panel"
 
 // restartHidden 为真时（托盘模式），重启子进程用 CREATE_NO_WINDOW 拉起，
 // 避免新控制台闪窗；仅 Windows 生效（见 restart_windows.go）。
@@ -463,6 +464,27 @@ func main() {
 		return nil
 	}
 
+	// ---- 自更新（方案 C）--------------------------------------------------------
+	// 程序只负责"下载 + 校验 + 派生 msiexec"，文件替换与回滚交给 Windows Installer；
+	// 安装成功后由 MSI 的 CaStartApp 拉起新版本（见 scripts/native/wb2api.wxs）。
+	selfDataDir, _ := os.Getwd()
+	selfInstallDir := selfDataDir
+	if exe, exeErr := os.Executable(); exeErr == nil {
+		selfInstallDir = filepath.Dir(exe)
+	}
+	applier := selfupdate.New(selfupdate.Options{
+		DataDir:    selfDataDir,
+		InstallDir: selfInstallDir,
+		Spawn:      selfupdate.SpawnMSI, // 非 Windows 返回 ErrNotRunnable
+		// 仅测试：允许 http 更新源（配 WB2A_UPDATE_BASE 指向本地 http://127.0.0.1:18080）。
+		// 生产不设该变量 ⇒ 强制 https（防降级/中间人）。
+		AllowHTTP: os.Getenv("WB2A_UPDATE_ALLOW_HTTP") == "1",
+	})
+	// 启动对账：上次"已派生 msiexec"但没等到重启的状态在这里收尾。
+	if st := applier.Reconcile(appVersion); st.Stage != selfupdate.StageIdle {
+		log.Printf("[selfupdate] 启动对账: stage=%s from=%s to=%s err=%s", st.Stage, st.From, st.To, st.Error)
+	}
+
 	pn := panel.New(panel.Config{
 		Pool:           p,
 		Usage:          rec,
@@ -483,8 +505,36 @@ func main() {
 		SaveConfig: func(raw []byte) ([]string, error) {
 			return saveConfig(raw, *cfgPath, live, p, up, sch)
 		},
-		Restart:  restartSvc,
-		Shutdown: shutdownSvc,
+		Restart: restartSvc,
+		ApplyUpdate: func(ctx context.Context) (selfupdate.State, error) {
+			if isDocker() {
+				return selfupdate.State{}, selfupdate.ErrNotRunnable
+			}
+			// 有在途请求时不更新：更新会重启网关，不能打断正在跑的对话。
+			if n := inFlightCount(p); n > 0 {
+				return applier.State(), panel.ErrUpdateInFlight
+			}
+			msi, ver, err := panel.FetchForApply(ctx)
+			if err != nil {
+				return applier.State(), err
+			}
+			if !panel.VersionNewer(ver, appVersion) {
+				return applier.State(), fmt.Errorf("已是最新版本（%s）", appVersion)
+			}
+			st, err := applier.Apply(ctx, appVersion, ver, msi)
+			if err != nil {
+				return st, err
+			}
+			// 响应写出后再退出：让 msiexec 接管安装，MSI 的 CaStartApp 拉起新版本。
+			go func() {
+				time.Sleep(800 * time.Millisecond)
+				log.Printf("[selfupdate] 已派生 msiexec（目标 %s），网关退出以便安装", st.To)
+				shutdownSvc()
+			}()
+			return st, nil
+		},
+		UpdateProgress: applier.State,
+		Shutdown:       shutdownSvc,
 		// 单号签到与排程全量签到共用一把锁：面板连点/手动与定时撞车时，
 		// 后到的请求得到 409 而不是并发打同一账号（第十轮审计 F5）。
 		TryCheckinLock: sch.TryCheckinLock,
@@ -1208,4 +1258,13 @@ func checkUpdateAndNotify(current string) {
 	log.Printf("[update] 发现新版本 %s（当前 %s）", res.Latest, current)
 	_ = tray.Notify("发现新版本 "+res.Latest,
 		"当前 "+current+" → 最新 "+res.Latest+"。打开控制台「检查更新」查看下载地址。")
+}
+
+// inFlightCount 汇总当前在途请求数（自更新前置检查：不打断用户对话）。
+func inFlightCount(p *pool.Pool) int {
+	n := 0
+	for _, st := range p.List() {
+		n += st.InFlight
+	}
+	return n
 }

@@ -2396,6 +2396,9 @@ function openUpdateDialog(d) {
   (q('updSha')||{}).textContent = d.sha256 ? (d.sha256.slice(0, 16) + '…') : '-';
   (q('updErrRow')||{}).style.display = d.error ? 'block' : 'none';
   (q('updErr')||{}).textContent = d.error || '';
+  const canApply = !!(d.available && d.can_apply);
+  (q('updApply') || {}).style.display = canApply ? 'inline-block' : 'none';
+  if (!canApply) stopUpdatePoll();
   const url = d.url || '';
   (q('updUrlRow')||{}).style.display = (avail && url) ? 'block' : 'none';
   (q('updUrl')||{}).value = url;
@@ -2449,6 +2452,73 @@ setTimeout(function () {
 /* 弹窗交互：关闭 / 复制 / 徽标与按钮共用 */
 // 更新弹窗的 DOM 在 app.js 之后解析（index.html 里 <script> 在前）⇒ 必须等 DOMContentLoaded，
 // 否则 close/copy 在 document 里查不到元素，弹窗关不掉（QA 实测）。
+/* ---------- 自更新（方案 C：程序下载+校验，msiexec 安装，MSI 负责回滚） ---------- */
+let __updPollTimer = null;
+function stopUpdatePoll() {
+  if (__updPollTimer) { clearTimeout(__updPollTimer); __updPollTimer = null; }
+}
+function updProgShow(text, pct, color) {
+  const row = $('updProgRow'), t = $('updProgText'), bar = $('updProgBar');
+  if (row) row.style.display = 'block';
+  if (t) t.textContent = text;
+  if (bar) { bar.style.width = Math.max(0, Math.min(100, pct || 0)) + '%'; bar.style.background = color || 'var(--ok)'; }
+}
+const UPD_STAGE_TEXT = {
+  idle: '空闲', download: '下载中', verify: '校验中', install: '正在安装（网关已退出，等待新版启动）',
+  done: '更新完成', failed: '更新失败'
+};
+async function pollUpdateProgress() {
+  stopUpdatePoll();
+  try {
+    const s = await api('update/progress');
+    const stage = s.stage || 'idle';
+    if (stage === 'done') {
+      updProgShow('更新完成：' + (s.to || '') + '，请刷新页面', 100, 'var(--ok)');
+      stopUpdatePoll();
+      return;
+    }
+    if (stage === 'failed') {
+      updProgShow('更新失败：' + (s.error || '未知原因'), 100, 'var(--bad)');
+      stopUpdatePoll();
+      return;
+    }
+    if (stage === 'install') {
+      updProgShow(UPD_STAGE_TEXT.install, 100, 'var(--warn)');
+    } else if (stage !== 'idle') {
+      updProgShow((UPD_STAGE_TEXT[stage] || stage) + ' ' + (s.percent || 0) + '%', s.percent || 0, 'var(--ok)');
+    }
+  } catch (e) {
+    // 网关重启中：连接会失败，继续等（最多 3 分钟由服务端状态兜底）
+    updProgShow('网关正在重启，等待新版启动…', 100, 'var(--warn)');
+  }
+  __updPollTimer = setTimeout(pollUpdateProgress, 2000);
+}
+async function applyUpdateNow() {
+  const btn = $('updApply');
+  if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
+  updProgShow('正在准备…', 5, 'var(--ok)');
+  try {
+    const r = await api('update/apply', { method: 'POST', body: '{}' });
+    updProgShow('已开始安装（网关即将重启）…', 60, 'var(--ok)');
+    if (window.__lastUpdate) window.__lastUpdate.available = false;
+    stopUpdatePoll();
+    __updPollTimer = setTimeout(pollUpdateProgress, 1500);
+    return r;
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    // 网关重启时连接会被切断（fetch 抛错、没有 HTTP 状态码）——这不代表更新失败，
+    // 转入轮询由服务端状态定论；只有 4xx/5xx 的明确错误才提示失败。
+    if (/HTTP 4|HTTP 5|not_applicable|update_busy|invalid/.test(msg)) {
+      updProgShow('无法更新：' + msg, 0, 'var(--bad)');
+      if (btn) { btn.disabled = false; btn.textContent = '立即更新'; }
+      return;
+    }
+    updProgShow('网关正在重启，等待新版启动…', 60, 'var(--warn)');
+    stopUpdatePoll();
+    __updPollTimer = setTimeout(pollUpdateProgress, 1500);
+  }
+}
+
 function bindUpdateDialog() {
   const veil = $('updVeil');
   if (!veil) return;
@@ -2457,6 +2527,8 @@ function bindUpdateDialog() {
   if (closeBtn) closeBtn.onclick = function () { veil.style.display = 'none'; };
   veil.onclick = function (e) { if (e.target === veil) veil.style.display = 'none'; };
   if (urlInput) urlInput.onclick = function () { urlInput.select(); };   // updUrlSelect：替代被 CSP 拦掉的行内 onclick
+  const applyBtn = $('updApply');
+  if (applyBtn) applyBtn.onclick = function () { applyUpdateNow(); };
   if (!copyBtn) return;
   copyBtn.onclick = async function () {
     const v = (urlInput && urlInput.value) || '';

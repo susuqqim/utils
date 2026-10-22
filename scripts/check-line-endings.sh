@@ -39,8 +39,22 @@ check_lf() {
   fi
 }
 
+
+# PowerShell 5.1 对"含非 ASCII 的 .ps1"要求 UTF-8 **BOM**：没有 BOM 就按 ANSI(936) 解码，
+# 中文注释会把语法拆坏。2026-10-22 实测：编辑工具保存时同时**丢 BOM**，改完必须校验。
+# 行尾对 .ps1 不作强制（PS 5.1 接受 LF，仓库现状即 LF），只强制 BOM。
+check_ps1_bom() {
+  local f="$1"
+  if ! python3 -c 'import sys;b=open(sys.argv[1],"rb").read();sys.exit(0 if b[:3]==bytes([239,187,191]) or all(c<128 for c in b) else 1)' "$f"; then
+    echo "[FAIL] $f: 含非 ASCII 但缺少 UTF-8 BOM（PowerShell 5.1 会解析失败）" >&2
+    fail=1
+  fi
+}
+
 while IFS= read -r f; do [ -f "$f" ] && check_crlf "$f"; done < <(git ls-files '*.cmd' '*.bat')
 while IFS= read -r f; do [ -f "$f" ] && check_lf "$f"; done < <(git ls-files '*.sh' '*.py' '*.go' '*.js' '*.json')
+
+while IFS= read -r f; do [ -f "$f" ] && check_ps1_bom "$f"; done < <(git ls-files "*.ps1")
 
 if [ "$fail" = 0 ]; then
   echo "[OK] 行尾策略正确（模块内：.cmd/.bat = CRLF；.sh/.py/.go/.js/.json = LF；工作区文档/ 上游快照不在范围）"

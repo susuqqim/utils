@@ -1357,8 +1357,16 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <div style="color:var(--ink-3);font-size:12.5px;margin-bottom:4px">下载地址（复制到浏览器或更新器使用）</div>
             <input id="updUrl" readonly style="width:100%;font-size:12px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--line);border-radius:7px">
           </div>
+          <div id="updProgRow" style="display:none;margin-top:10px;font-size:12.5px;color:var(--ink-2)">
+            <div id="updProgText">准备中…</div>
+            <div style="height:6px;background:var(--surface-2);border-radius:4px;overflow:hidden;margin-top:6px">
+              <div id="updProgBar" style="height:100%;width:0%;background:var(--ok);transition:width .3s"></div>
+            </div>
+          </div>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <!-- 自更新：有 msi 段才显示（老版本清单没有该段时保持只给下载链接） -->
+          <button class="primary" id="updApply" style="display:none">立即更新</button>
           <button class="ghost" id="updCopy" style="display:none">复制下载地址</button>
           <button class="primary" id="updClose">关闭</button>
         </div>

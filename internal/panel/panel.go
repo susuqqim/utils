@@ -11,6 +11,7 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"workbuddy2api/internal/livecfg"
 	"workbuddy2api/internal/pool"
 	"workbuddy2api/internal/scheduler"
+	"workbuddy2api/internal/selfupdate"
 	"workbuddy2api/internal/upstream"
 	"workbuddy2api/internal/usage"
 )
@@ -74,6 +76,14 @@ type Config struct {
 	UnlockCheckin  func()
 
 	Restart func() error
+
+	// ApplyUpdate 执行"程序内自更新"：下载 MSI → 校验 SHA256 → 派生 msiexec。
+	// 返回目标版本与状态；nil = 未装配（非 Windows 形态 / 未启用自更新）。
+	// 注意：成功返回后调用方必须让本进程退出（由 MSI 的 CaStartApp 拉起新版本）。
+	ApplyUpdate func(ctx context.Context) (selfupdate.State, error)
+
+	// UpdateProgress 返回最近一次更新状态（进程内；重启后由 Reconcile 补齐）。
+	UpdateProgress func() selfupdate.State
 
 	// Shutdown 触发网关服务关闭；nil 时返回 501。
 	Shutdown func() error
@@ -293,6 +303,10 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
 	p.mux.HandleFunc("GET /panel/api/update/check", p.withAuth(p.handleUpdateCheck))
+	// 自更新：apply 是**会改状态**的 POST（自动受 keyless CSRF 白名单约束）；
+	// progress 只读，进程重启后从 update-state.json 回填。
+	p.mux.HandleFunc("GET /panel/api/update/progress", p.withAuth(p.handleUpdateProgress))
+	p.mux.HandleFunc("POST /panel/api/update/apply", p.withAuth(p.handleUpdateApply))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
 	p.mux.HandleFunc("POST /panel/api/system/restart", p.withAuth(p.systemRestart))
 	p.mux.HandleFunc("POST /panel/api/system/shutdown", p.withAuth(p.systemShutdown))
