@@ -39,7 +39,8 @@ type Config struct {
 	// 0（默认）= 收到即停手：同一请求继续换号会被上游视为同源批量试探，
 	// 实测 6 分钟内把 3 个账号逐个连坐限制。
 	RestrictedRotateMax int
-	// RestrictionTTL 11140 限制的持久化时长（默认 2h）；到期后账号自动回到可选池。
+	// RestrictionTTL 11140 限制的持久化时长：0 = 永久（默认，需人工解除）；
+	// >0 时按限时处理，到期自动回到可选池（旧行为，仅个别环境回退用）。
 	RestrictionTTL time.Duration
 	// RestrictionWaveWindow / RestrictionWaveMin 整池波次暂停：同一 realm 在窗口内
 	// 被限制 ≥Min 个账号 ⇒ 暂停该 realm 一段时间，避免继续试探连坐。
@@ -1762,10 +1763,15 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 11128（通道校验失败）与 11140（账号被限制）msg 同为 "request illegal"，
 		// Classify 已按业务码分流 ⇒ 这里只处理真正的 11140（code + 文案双条件）。
 		if upstream.IsAccountRestricted(body) {
-			// 【P1-7】用 Restrict（带到期时间）而不是 Disable：上游这类限制会自行解除，
-			// 永久禁用会让恢复后的健康号白白浪费，并诱导用户去点"解冻"。
+			// 【2026-10-24 依据上游新行为改口径】11140 返回体带
+			//   displayMsg「账号存在异常行为，已被限制使用」
+			//   displayTips「We detected unusual activity on this account. Submit feedback to appeal this restriction」
+			// 即账号级、需申诉、不会自愈（社区 10-23 起批量中招）。
+			// 默认按永久限制处理（restriction_ttl=0）：到期自动放回池子只会反复撞 403，
+			// 白白浪费轮转并加重风控；恢复走「客户端申诉成功 -> 面板点解冻」。
+			// 仍保留 restriction_ttl>0 的限时模式，供个别环境回退。
 			h.cfg.Pool.Restrict(uid, h.cfg.RestrictionTTL,
-				"account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction")
+				"upstream 11140: account restricted (unusual activity); appeal in WorkBuddy then click revive in panel")
 			return
 		}
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.softCooldown(), "account fault (14017)")

@@ -26,6 +26,13 @@ func (p *Pool) Restrict(uid string, ttl time.Duration, reason string) {
 		e.reason = reason
 		if ttl > 0 {
 			e.restrictedUntil = p.now().Add(ttl)
+		} else {
+			// ttl<=0 = 永久限制，只能人工解除（面板「解冻」调 Pool.Revive）。
+			// 2026-10-23 起上游把 11140 定性为「账号存在异常行为，需申诉」的账号级限制
+			// （返回体 displayTips 明写 appeal），不会再自行解除；若继续按 TTL 自动放回池子，
+			// 每次请求都会再撞 403，还加重风控。
+			// 显式清零到期时间，避免上一次限时限制的残留值让 blocked() 误判为已到期可用。
+			e.restrictedUntil = time.Time{}
 		}
 		p.invalidateChunkLocked(uid)
 		p.dirty.Store(true)

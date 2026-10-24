@@ -49,6 +49,27 @@ var (
 	ErrInstallFailed = errors.New("selfupdate: 安装程序立即失败")
 )
 
+// NewHTTPClients 返回（直连客户端, 系统代理客户端），供 cmd/server 注入：
+// 直连优先，失败再回退系统代理。
+func NewHTTPClients() (direct, proxy *http.Client) {
+	return &http.Client{Transport: newNetworkTransport(false), Timeout: 10 * time.Minute},
+		&http.Client{Transport: newNetworkTransport(true), Timeout: 10 * time.Minute}
+}
+
+// newNetworkTransport 同 panel 侧的 newUpdateTransport：直连时 Proxy=nil。
+func newNetworkTransport(useProxy bool) *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if useProxy {
+		tr.Proxy = http.ProxyFromEnvironment
+	} else {
+		tr.Proxy = nil
+	}
+	tr.TLSHandshakeTimeout = 10 * time.Second
+	tr.ResponseHeaderTimeout = 60 * time.Second
+	tr.IdleConnTimeout = 60 * time.Second
+	return tr
+}
+
 // Waiter 等待安装程序退出并返回退出码（必须幂等：多次调用返回同一结果）。
 // 为什么要等：msiexec 对坏包/被策略拦截会在 1 秒内以非 0 退出，
 // 此时若网关已退出，就没人把服务拉起来（2026-10-22 实测 1620）。
@@ -81,10 +102,13 @@ type Options struct {
 	DataDir    string // update-state.json / update.lock 落在这里
 	InstallDir string // msi 下载目录与安装目录（exe 所在目录）
 
-	Now      func() time.Time
-	HTTP     *http.Client
-	Spawn    func(msiPath, logPath string) (Waiter, error) // 派生安装程序；nil = 平台不支持
-	DiskFree func(dir string) (int64, error)
+	Now  func() time.Time
+	HTTP *http.Client
+	// HTTPProxy 可选：HTTP（直连）失败后回退用的客户端（跟随系统代理）。
+	// 有些环境必须走代理才能出网；不设则不回退。
+	HTTPProxy *http.Client
+	Spawn     func(msiPath, logPath string) (Waiter, error) // 派生安装程序；nil = 平台不支持
+	DiskFree  func(dir string) (int64, error)
 
 	MinFree   int64         // 额外保留空间（默认 256MB）
 	LockStale time.Duration // 超过该时长的锁视为陈旧（默认 30min）
@@ -114,7 +138,9 @@ func New(opt Options) *Applier {
 		opt.Now = time.Now
 	}
 	if opt.HTTP == nil {
-		opt.HTTP = &http.Client{Timeout: 10 * time.Minute}
+		// 默认**显式直连**（Proxy=nil）：客户端漏传时也不能继承系统里的死代理，
+		// 否则会出现「开了代理能下载、不开代理下不了」的排查黑洞。
+		opt.HTTP = &http.Client{Transport: newNetworkTransport(false), Timeout: 10 * time.Minute}
 	}
 	if opt.DiskFree == nil {
 		opt.DiskFree = diskFree
@@ -333,9 +359,13 @@ func (a *Applier) Apply(ctx context.Context, current, target string, m MSI) (Sta
 	// 国内直连 GitHub Release 经常几 MB 都下不完，没有这层就永远更新不了。
 	msiPath := ""
 	var lastErr error
+	clients := []*http.Client{a.opt.HTTP}
+	if a.opt.HTTPProxy != nil {
+		clients = append(clients, a.opt.HTTPProxy)
+	}
 	for _, u := range a.candidateURLs(m.URL) {
 		for attempt := 1; attempt <= a.opt.DownloadAttempts; attempt++ {
-			p, _, derr := a.downloadFrom(ctx, u, m, &st)
+			p, _, derr := a.downloadFrom(ctx, clients[min(attempt-1, len(clients)-1)], u, m, &st)
 			if derr == nil {
 				msiPath = p
 				break
@@ -398,7 +428,7 @@ func (a *Applier) Apply(ctx context.Context, current, target string, m MSI) (Sta
 // downloadFrom 从单个 URL 流式下载到 .update/<name>，边下边算 SHA256。
 // 支持**断点续传**：已有 .part 时发 Range 请求（206 追加、200 从头再来），
 // 失败时保留 .part 供下一次尝试继续 —— 本国网络下 3MB 常常一次下不完。
-func (a *Applier) downloadFrom(ctx context.Context, urlStr string, m MSI, st *State) (string, string, error) {
+func (a *Applier) downloadFrom(ctx context.Context, client *http.Client, urlStr string, m MSI, st *State) (string, string, error) {
 	dir := filepath.Join(a.opt.InstallDir, ".update")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", "", err
@@ -437,7 +467,7 @@ func (a *Applier) downloadFrom(ctx context.Context, urlStr string, m MSI, st *St
 	if start > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
 	}
-	resp, err := a.opt.HTTP.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("下载失败: %w", err)
 	}

@@ -341,7 +341,7 @@ func TestDownloadResumesFromPartial(t *testing.T) {
 	}
 
 	st := State{Stage: StageDownload, To: "1.11.20"}
-	p, got, err := a.downloadFrom(context.Background(), srv.URL, MSI{Name: "x.msi", URL: srv.URL, SHA256: sha, Size: int64(len(body))}, &st)
+	p, got, err := a.downloadFrom(context.Background(), a.opt.HTTP, srv.URL, MSI{Name: "x.msi", URL: srv.URL, SHA256: sha, Size: int64(len(body))}, &st)
 	if err != nil {
 		t.Fatalf("downloadFrom: %v", err)
 	}

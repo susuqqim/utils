@@ -239,7 +239,7 @@ type Config struct {
 		BreakerCooldownMax string `json:"breaker_cooldown_max"` // 指数退避封顶，默认 "6h"
 		// 【P1-7】上游风控限制（11140 账号画像风控）防连坐三件套
 		RestrictedRotateMax   int     `json:"restricted_rotate_max"`   // 0（默认）= 收到 11140 即停手，不跨号重试
-		RestrictionTTL        string  `json:"restriction_ttl"`         // 限制持久化时长，默认 "2h"（到期自动放回池）
+		RestrictionTTL        string  `json:"restriction_ttl"`         // 11140 限制时长，默认 "0"=永久（需人工解冻）；>0 为旧限时行为
 		RestrictionWaveWindow string  `json:"restriction_wave_window"` // 波次统计窗口，默认 "15m"
 		RestrictionWaveMin    int     `json:"restriction_wave_min"`    // 窗口内被限制多少个号触发整池暂停，默认 2
 		RestrictionPause      string  `json:"restriction_pause"`       // 整池暂停时长，默认 = 窗口
@@ -691,7 +691,8 @@ func (c *Config) normalize() error {
 	}
 	// 【P1-7】风控限制相关默认值（空 = 默认；非法值报错，与其它时长同口径）
 	if c.Pool.RestrictionTTL == "" {
-		c.Pool.RestrictionTTL = "2h"
+		// 0 = 永久限制（默认）：上游 11140 需申诉、不会自愈，按 TTL 自动放回只会反复撞 403。
+		c.Pool.RestrictionTTL = "0"
 	}
 	if c.RestrictionTTLD, err = time.ParseDuration(c.Pool.RestrictionTTL); err != nil {
 		return fmt.Errorf("pool.restriction_ttl: %w", err)

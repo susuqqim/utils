@@ -40,7 +40,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.25-preview.1"
+const appVersion = "1.11.26-panel"
 
 // restartHidden 为真时（托盘模式），重启子进程用 CREATE_NO_WINDOW 拉起，
 // 避免新控制台闪窗；仅 Windows 生效（见 restart_windows.go）。
@@ -472,6 +472,7 @@ func main() {
 	if exe, exeErr := os.Executable(); exeErr == nil {
 		selfInstallDir = filepath.Dir(exe)
 	}
+	updateDirect, updateProxy := selfupdate.NewHTTPClients()
 	applier := selfupdate.New(selfupdate.Options{
 		DataDir:    selfDataDir,
 		InstallDir: selfInstallDir,
@@ -479,6 +480,8 @@ func main() {
 		// 仅测试：允许 http 更新源（配 WB2A_UPDATE_BASE 指向本地 http://127.0.0.1:18080）。
 		// 生产不设该变量 ⇒ 强制 https（防降级/中间人）。
 		AllowHTTP: os.Getenv("WB2A_UPDATE_ALLOW_HTTP") == "1",
+		HTTP:      updateDirect,
+		HTTPProxy: updateProxy,
 		// 国内直连 GitHub Release 经常下不完（实测 3.6MB 包只拉到 1MB），
 		// 主地址失败/校验不符时依次试这些镜像前缀；最终仍以 SHA256 为准。
 		Mirrors: []string{

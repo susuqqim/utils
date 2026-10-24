@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -109,6 +111,30 @@ type updateCheckResult struct {
 
 	// Channel 当前更新通道（stable / preview）；面板据此显示预览版徽标。
 	Channel string `json:"channel,omitempty"`
+	// Source 实际命中的清单源（并发竞速的胜出者），排障用。
+	Source string `json:"source,omitempty"`
+	// Stale=true：本次拉取失败，展示的是上一次成功结果（面板需提示"非实时"）。
+	Stale bool `json:"stale,omitempty"`
+}
+
+// newUpdateTransport 构造更新检测专用 Transport。
+// useProxy=false 时**显式直连**（Proxy=nil）：这是修「不开代理无法检查更新」的关键——
+// http.Client{Transport:nil} 会继承 http.DefaultTransport，而它带 ProxyFromEnvironment，
+// 机器上残留 HTTPS_PROXY 或注册表代理（即使代理进程没开）就会让所有源都走死代理。
+// useProxy=true 时跟随系统代理，供「必须走代理才能出网」的环境回退。
+func newUpdateTransport(useProxy bool) *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if useProxy {
+		tr.Proxy = http.ProxyFromEnvironment
+	} else {
+		tr.Proxy = nil
+	}
+	tr.DialContext = (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	tr.TLSHandshakeTimeout = 5 * time.Second
+	tr.ResponseHeaderTimeout = 6 * time.Second
+	tr.IdleConnTimeout = 30 * time.Second
+	tr.MaxIdleConnsPerHost = 2
+	return tr
 }
 
 var (
@@ -119,18 +145,28 @@ var (
 	updateManifestSourceTemplates = []string{
 		"https://raw.githubusercontent.com/susuqqim/utils/main/%s",
 		"https://cdn.jsdelivr.net/gh/susuqqim/utils@main/%s",
+		"https://gcore.jsdelivr.net/gh/susuqqim/utils@main/%s",
 	}
-	// 与 PowerShell 侧相同的三个代理前缀（pp 前缀 + 完整 release URL）
+	// 2026-10-24 实测（不带代理，每源 3 轮）：raw 3/3 1.8s、cdn.jsdelivr 3/3 2.8s、
+	// gcore.jsdelivr 1/3、fastly/test1/github-release/ghproxy.net/mirror.ghproxy/ghfast.top/
+	// raw.gitmirror 全部 0/3；gh-proxy.com 3/3 2.0s（唯一可用的 GitHub 代理前缀）。
 	updateManifestProxies = []string{
-		"https://ghproxy.net/",
 		"https://gh-proxy.com/",
-		"https://mirror.ghproxy.com/",
 	}
-	updateHTTPClient = &http.Client{Timeout: 8 * time.Second}
+	// 两套 Transport：**直连优先**，直连全失败才回退系统代理。
+	// 根因（2026-10-24 审计）：http.Client{Transport:nil} 会用 http.DefaultTransport，
+	// 而它带 ProxyFromEnvironment ⇒ 机器上残留 HTTPS_PROXY / 注册表代理（即使代理没开）
+	// 会让所有源都走一个死代理，表现为「不开代理就检查不了更新」。
+	updateDirectClient = &http.Client{Transport: newUpdateTransport(false), Timeout: 12 * time.Second}
+	updateProxyClient  = &http.Client{Transport: newUpdateTransport(true), Timeout: 12 * time.Second}
 
 	updateCacheMu sync.Mutex
 	updateCache   updateCheckResult
 	updateCacheAt time.Time
+	// updateLastGood 是**最近一次成功**的检查结果（不受 5 分钟缓存窗口限制）。
+	// 目的：网络临时不可用时，面板仍能显示"上次已知的最新版本"而不是一片空白。
+	updateLastGood   updateCheckResult
+	updateLastGoodAt time.Time
 )
 
 // leadingDigits 取字符串开头连续数字；无数字返回 0。
@@ -280,38 +316,83 @@ func parseAllDigits(s string) (int, bool) {
 
 // fetchUpdateManifest 依次尝试各源；全部失败返回错误。
 func fetchUpdateManifest(ctx context.Context) (updateManifest, string, error) {
-	// 按通道生成候选源（stable=latest.json / preview=preview.json）。
 	sources := manifestSourcesFor(CurrentChannel())
-
-	var lastErr error
-	for _, u := range sources {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		resp, err := updateHTTPClient.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		body := json.NewDecoder(resp.Body)
-		var m updateManifest
-		err = body.Decode(&m)
-		resp.Body.Close()
-		if err != nil || m.Version == "" {
-			if err == nil {
-				err = errUpdateManifestEmpty
-			}
-			lastErr = err
-			continue
-		}
+	// 第一轮：直连（并发竞速，整体预算 10s）。
+	if m, u, err := raceFetchManifest(ctx, sources, updateDirectClient, 10*time.Second); err == nil {
 		return m, u, nil
 	}
-	if lastErr == nil {
-		lastErr = errUpdateManifestEmpty
+	// 第二轮：直连全失败 → 回退「系统代理」通道（预算 6s）。
+	// 不判断环境变量：Windows 的代理常常只写在注册表（Go 的 ProxyFromEnvironment 读不到），
+	// 而无代理时该通道等价于再直连一次，多一轮请求没有副作用。
+	if m, u, err := raceFetchManifest(ctx, sources, updateProxyClient, 6*time.Second); err == nil {
+		return m, u, nil
 	}
-	return updateManifest{}, "", lastErr
+	return updateManifest{}, "", errUpdateManifestEmpty
+}
+
+// raceFetchManifest 并发拉取所有候选源，先成功者胜出；全部失败返回错误。
+// ctx 超时后其余请求随 ctx 取消返回，channel 有缓冲不会阻塞 goroutine。
+func raceFetchManifest(ctx context.Context, sources []string, client *http.Client, budget time.Duration) (updateManifest, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	type result struct {
+		m   updateManifest
+		u   string
+		err error
+	}
+	ch := make(chan result, len(sources))
+	for _, u := range sources {
+		go func(u string) {
+			m, err := fetchOneManifest(ctx, client, u)
+			ch <- result{m: m, u: u, err: err}
+		}(u)
+	}
+	var firstErr error
+	for i := 0; i < len(sources); i++ {
+		select {
+		case r := <-ch:
+			if r.err == nil {
+				return r.m, r.u, nil
+			}
+			if firstErr == nil {
+				firstErr = r.err
+			}
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return updateManifest{}, "", firstErr
+		}
+	}
+	if firstErr == nil {
+		firstErr = errUpdateManifestEmpty
+	}
+	return updateManifest{}, "", firstErr
+}
+
+// fetchOneManifest 拉单个源并解析；空 version 视为失败。
+func fetchOneManifest(ctx context.Context, client *http.Client, u string) (updateManifest, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return updateManifest{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return updateManifest{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return updateManifest{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	// 清单只有几百字节；限制 1MB 上限，避免异常源喂巨量 body 把内存打爆。
+	var m updateManifest
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m); err != nil {
+		return updateManifest{}, err
+	}
+	if m.Version == "" {
+		return updateManifest{}, errUpdateManifestEmpty
+	}
+	return m, nil
 }
 
 // CheckUpdateFor 供非面板入口（托盘启动自检）使用：不依赖 Panel 实例。
@@ -328,9 +409,20 @@ func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheck
 	updateCacheMu.Unlock()
 
 	res := updateCheckResult{Current: current, CheckedAt: time.Now().Format(time.RFC3339), Channel: CurrentChannel()}
-	m, _, err := fetchUpdateManifest(ctx)
+	m, src, err := fetchUpdateManifest(ctx)
 	if err != nil {
+		// 失败兜底：有上一次成功结果就用它（标注 stale），避免面板"检查失败"一片空白。
+		updateCacheMu.Lock()
+		last := updateLastGood
+		updateCacheMu.Unlock()
 		res.Error = err.Error()
+		if last.Latest != "" {
+			res.Latest, res.SHA256, res.Size, res.URL = last.Latest, last.SHA256, last.Size, last.URL
+			res.MSI, res.Source, res.Stale = last.MSI, last.Source, true
+			res.Available = versionNewer(res.Latest, current)
+			res.CanApply = res.MSI != nil
+			res.Error = "检查失败，显示上次成功（" + updateLastGoodAt.Format("01-02 15:04") + "）：" + err.Error()
+		}
 	} else {
 		res.Latest = m.Version
 		res.SHA256 = m.SHA256
@@ -341,6 +433,10 @@ func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheck
 		}
 		res.MSI = m.MSI
 		res.CanApply = m.MSI != nil
+		res.Source = src
+		updateCacheMu.Lock()
+		updateLastGood, updateLastGoodAt = res, time.Now()
+		updateCacheMu.Unlock()
 	}
 	updateCacheMu.Lock()
 	updateCache, updateCacheAt = res, time.Now()

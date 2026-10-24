@@ -615,7 +615,7 @@ func TestChatAccountFault11140StopsRotation(t *testing.T) {
 	if !st.Disabled {
 		t.Fatalf("11140 账号应被禁用: %+v", st)
 	}
-	wantReason := "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction"
+	wantReason := "upstream 11140: account restricted (unusual activity); appeal in WorkBuddy then click revive in panel"
 	if st.DisabledReason != wantReason {
 		t.Errorf("disabled_reason=%q want %q", st.DisabledReason, wantReason)
 	}
@@ -802,7 +802,7 @@ func TestChatAccountFault14017Rotates(t *testing.T) {
 // 分类下按 msg 分野——"request illegal"(11140) → 硬禁用；"trial"(14017) → 软冷却不禁用。
 // 端到端接线由上方 TestChatAccountFault11140Disables / TestChatAccountFault14017Rotates 覆盖。
 func TestApplyErrorPolicyAccountFaultSplit(t *testing.T) {
-	const why11140 = "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction"
+	const why11140 = "upstream 11140: account restricted (unusual activity); appeal in WorkBuddy then click revive in panel"
 
 	t.Run("11140 request illegal disables", func(t *testing.T) {
 		p := pool.New("")
