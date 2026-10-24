@@ -317,57 +317,56 @@ func parseAllDigits(s string) (int, bool) {
 // fetchUpdateManifest 依次尝试各源；全部失败返回错误。
 func fetchUpdateManifest(ctx context.Context) (updateManifest, string, error) {
 	sources := manifestSourcesFor(CurrentChannel())
-	// 第一轮：直连（并发竞速，整体预算 10s）。
-	if m, u, err := raceFetchManifest(ctx, sources, updateDirectClient, 10*time.Second); err == nil {
+	// 第一轮：直连（并发拉取，4s 预算内取最高版本）。
+	if m, u, ok := gatherManifest(ctx, sources, updateDirectClient, 4*time.Second); ok {
 		return m, u, nil
 	}
-	// 第二轮：直连全失败 → 回退「系统代理」通道（预算 6s）。
+	// 第二轮：直连全失败 → 回退「系统代理」通道（预算 4s）。
 	// 不判断环境变量：Windows 的代理常常只写在注册表（Go 的 ProxyFromEnvironment 读不到），
 	// 而无代理时该通道等价于再直连一次，多一轮请求没有副作用。
-	if m, u, err := raceFetchManifest(ctx, sources, updateProxyClient, 6*time.Second); err == nil {
+	if m, u, ok := gatherManifest(ctx, sources, updateProxyClient, 4*time.Second); ok {
 		return m, u, nil
 	}
 	return updateManifest{}, "", errUpdateManifestEmpty
 }
 
-// raceFetchManifest 并发拉取所有候选源，先成功者胜出；全部失败返回错误。
-// ctx 超时后其余请求随 ctx 取消返回，channel 有缓冲不会阻塞 goroutine。
-func raceFetchManifest(ctx context.Context, sources []string, client *http.Client, budget time.Duration) (updateManifest, string, error) {
+// gatherManifest 并发拉取所有候选源，**在所有源完成或预算到期后取版本最高者**。
+//
+// 为什么不是「首个成功就返回」：2026-10-24 真实环境审计发现，jsDelivr 系
+// （cdn/gcore）缓存明显滞后——发版后它仍返回上一个版本，而 GitHub Release 直连
+// 已经是新版本。若谁先回用谁，面板就会显示旧版本（"已是最新"假象）。
+// 因此这里等一个短窗口（预算 4s，典型 1~2s 内全部返回），在成功结果里按版本取最大。
+func gatherManifest(ctx context.Context, sources []string, client *http.Client, budget time.Duration) (updateManifest, string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	type result struct {
+	type hit struct {
 		m   updateManifest
 		u   string
 		err error
 	}
-	ch := make(chan result, len(sources))
+	ch := make(chan hit, len(sources))
 	for _, u := range sources {
 		go func(u string) {
 			m, err := fetchOneManifest(ctx, client, u)
-			ch <- result{m: m, u: u, err: err}
+			ch <- hit{m: m, u: u, err: err}
 		}(u)
 	}
-	var firstErr error
+	var best hit
+	found := false
 	for i := 0; i < len(sources); i++ {
 		select {
 		case r := <-ch:
-			if r.err == nil {
-				return r.m, r.u, nil
-			}
-			if firstErr == nil {
-				firstErr = r.err
+			if r.err == nil && (!found || compareVersion(r.m.Version, best.m.Version) > 0) {
+				best, found = r, true
 			}
 		case <-ctx.Done():
-			if firstErr == nil {
-				firstErr = ctx.Err()
-			}
-			return updateManifest{}, "", firstErr
+			i = len(sources)
 		}
 	}
-	if firstErr == nil {
-		firstErr = errUpdateManifestEmpty
+	if found {
+		return best.m, best.u, true
 	}
-	return updateManifest{}, "", firstErr
+	return updateManifest{}, "", false
 }
 
 // fetchOneManifest 拉单个源并解析；空 version 视为失败。
