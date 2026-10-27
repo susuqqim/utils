@@ -13,10 +13,10 @@ import (
 // sanitizeFeatures 特征预检：任一命中才进入净化（strings.Contains 快速路径，
 // 普通请求全不中 → 原样返回，零分配）。
 var sanitizeFeatures = []string{
-	"x-anthropic-billing-header", // header 键值段键名
-	"cc_entrypoint=",             // 尾随裸键值（截断前缀即可命中）
-	"You are Claude Code",        // 身份句（截断前缀即可命中）
-	"Main branch (",              // 注入指令句（截断前缀即可命中）
+	"x-anthropic-billing-header",                      // header 键值段键名
+	"cc_entrypoint=",                                  // 尾随裸键值（截断前缀即可命中）
+	"You are Claude Code",                             // 身份句（截断前缀即可命中）
+	"Main branch (",                                   // 注入指令句（截断前缀即可命中）
 	"You are a coding agent running in the Codex CLI", // Codex instructions 首段（截断前缀即可命中）
 	"github.com/anthropics/",                          // 反馈句里的 Anthropic 仓库链接
 	"11-128",                                          // 上游反探测：裸数字错误码
@@ -35,6 +35,10 @@ var sanitizeFeatures = []string{
 	// 只把这一个从句换成中性表述即 200（同一请求连发 5 次稳定 400，非抽样）。
 	// 这是目前唯一能确定复现的 CN 域指纹，必须进预检 + 改写表。
 	"whose URL the runtime context names",
+	// 【2026-10-27 22:50 生产逐字节二分确证】上游新加入 DSH 的 @ 路径说明段：
+	// 旧会话（10-26）同句可过，10-27 同 prompt/模型/网关稳定 11128；只改一词即 200。
+	// 预检用段首，改写表覆盖这段中 4 个已确认的连续子串（最小语义改写）。
+	"Tokens prefixed with @",
 	"powered by OpenCode", // 身份句：OpenCode 类
 	"powered by Cline",    // 身份句：Cline 类
 	"Sisyphus-Junior",     // OhMyOpenCode / OmO 架构指纹
@@ -85,6 +89,24 @@ var sanitizeRewrites = [][2]string{
 		// 只替换这一个从句（不动整句/其它 "runtime context" 出现处），最小侵入。
 		"whose URL the runtime context names",
 		"whose URL is named in the runtime context",
+	},
+	{
+		// 【2026-10-27 DSH 新指纹】@ 路径说明段；同一完整 system prompt：原文 11128，
+		// 以下每项只换一个词、语义保持不变。首项既是预检锚点也是确定性触发串。
+		"Tokens prefixed with @",
+		"Tokens beginning with @",
+	},
+	{
+		"the user explicitly referenced",
+		"the user explicitly mentioned",
+	},
+	{
+		"absolute paths identify files or directories",
+		"absolute paths point to files or directories",
+	},
+	{
+		"list it when its contents matter",
+		"list it when its contents are relevant",
 	},
 	{
 		"You are Claude Code, Anthropic's official CLI for Claude",

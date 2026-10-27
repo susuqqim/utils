@@ -1105,7 +1105,7 @@ readLoop:
 		if raw, err := json.Marshal(tail); err == nil {
 			_ = writeRaw(string(raw))
 		}
-		log.Printf("WARN: [upstream] 上游未给规范的收尾帧（finish_reason 贴在数据帧上），已补 %d 个 choice 的末帧", len(idxs))
+		logTailPatched(len(idxs))
 	}
 
 	// 保证恰好写一个 [DONE]（上游漏发或异常中断时兜底补上，杜绝下游 Agent 挂死悬空）。
@@ -1123,6 +1123,26 @@ readLoop:
 	}
 	return nil
 }
+
+// tailPatchedWarnEvery 「补末帧」日志节流：上游抖动时会连续缺规范收尾帧，
+// 每条流都打一条 WARN 会刷屏（同一时段实测可连刷数十条），与 noDoneWarnEvery 同构。
+const tailPatchedWarnEvery = 100
+
+var tailPatchedCount atomic.Int64
+
+// logTailPatched 首次必打（保留可观测性），此后每 tailPatchedWarnEvery 次一条。
+func logTailPatched(n int) {
+	c := tailPatchedCount.Add(1)
+	if shouldWarnTailPatched(c) {
+		log.Printf("WARN: [upstream] 上游未给规范的收尾帧（finish_reason 贴在数据帧上），已补 %d 个 choice 的末帧（第 %d 次）", n, c)
+	}
+}
+
+// shouldWarnTailPatched 节流判据（纯函数，便于确定性单测）：首次 + 每 N 次。
+func shouldWarnTailPatched(c int64) bool { return c == 1 || c%tailPatchedWarnEvery == 0 }
+
+// TailPatchedCount 返回「补末帧」累计次数（供排障/单测观察，不对外暴露端点）。
+func TailPatchedCount() int64 { return tailPatchedCount.Load() }
 
 // noDoneWarnEvery 静默截断（上游没发 [DONE] 就 EOF）日志节流：首次 + 每 N 次一条。
 const noDoneWarnEvery = 100

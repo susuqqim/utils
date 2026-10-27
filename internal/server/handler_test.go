@@ -3294,6 +3294,22 @@ func TestStatusExposesStreamNoDoneCounter(t *testing.T) {
 	}
 }
 
+// 「补末帧」计数同样透出 /status：B3 给它加了日志节流（首次 + 每 100 次一条），
+// 计数若也跟着"节流"就等于把可观测性一起砍掉了 —— 这条用例钉住"键必须存在且为数值"。
+func TestStatusExposesStreamTailPatchedCounter(t *testing.T) {
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body["stream_tail_patched_total"].(float64); !ok {
+		t.Fatalf("/status 缺少 stream_tail_patched_total: %s", rec.Body)
+	}
+}
+
 // 11133 类（**模型相关**的参数拒绝）必须保留轮转：同一 body 换号可能成功
 // （本报自证：同参数 hy4 通过、GPT 系 15 拒 16 过）。审查 A/4 号的 P1-2。
 // 对照：11101（请求体解析失败）必须首轮即 400 不轮转（见上一个用例）。

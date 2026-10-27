@@ -313,8 +313,12 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		// 便于发现"上游悄悄少了收尾帧"而不必翻日志（该形态按正常结束兜底补 [DONE]，
 		// 语义不变，见 upstream.StreamNoDoneCount）。
 		"stream_no_done_total": upstream.StreamNoDoneCount(),
-		"redis_mode":           redisMode,
-		"credit_floor":         h.cfg.Pool.CreditFloor(),
+		// 「补末帧」累计次数（上游把 finish_reason 贴在数据帧上、由网关补齐收尾的形态）：
+		// 与 stream_no_done_total 同族只读观测项。日志侧按 100 次节流（B3），
+		// 计数不节流 —— 否则"上游这段时间一直在缺收尾帧"就看不出来了。
+		"stream_tail_patched_total": upstream.TailPatchedCount(),
+		"redis_mode":                redisMode,
+		"credit_floor":              h.cfg.Pool.CreditFloor(),
 	})
 }
 
