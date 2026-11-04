@@ -98,7 +98,7 @@ add_pat() { # pat desc level [positive-sample]
 
 add_pat 'ghp_[A-Za-z0-9]{20,}' 'GitHub token 形态' warn 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 add_pat 'sk-[A-Za-z0-9]{32,}' 'OpenAI 风格密钥形态' warn 'sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd'
-add_pat 'sk-wb2a-[A-Za-z0-9_-]{16,}' '本项目 api_key 形态（sk-wb2a-…）' warn 'sk-wb2a-9f3c1d2e4b5a6c7d8e9f0a1b'
+add_pat 'sk-wb2a-[A-Za-z0-9_-]{16,}' '本项目 api_key 形态（sk-wb2a-…）' warn 'sk-wb2a-EXAMPLE-FAKE-SAMPLE-0000'
 add_pat 'AKIA[0-9A-Z]{16}' 'AWS AccessKey 形态' warn 'AKIAIOSFODNN7EXAMPLE'
 add_pat '-----BEGIN [A-Z ]*PRIVATE KEY-----' '私钥文件内容' warn '-----BEGIN RSA PRIVATE KEY-----'
 add_pat '"access_token"[[:space:]]*:[[:space:]]*"[A-Za-z0-9._-]{20,}"' '明文 access_token 字段' warn '"access_token": "abcdefghijklmnopqrstuvwxyz012345"'
