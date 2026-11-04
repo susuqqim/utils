@@ -1,16 +1,16 @@
 {
-  "version": "1.11.30",
-  "sha256": "98c583df9ac8957954372f621e0f753a99fed9f617da8e325a1fc70b8c828ac0",
-  "size": 11957248,
+  "version": "1.11.31",
+  "sha256": "dd8539f3abfab7e97946f91e87797338250d7657e3249a46259f80f432923a7f",
+  "size": 11958784,
   "urls": [
-    "https://github.com/susuqqim/utils/releases/download/v1.11.30/wb2api-core.exe"
+    "https://github.com/susuqqim/utils/releases/download/v1.11.31/wb2api-core.exe"
   ],
-  "generated": "2026-11-04T20:41:26",
-  "notes": "# WorkBuddy2API 更新说明（1.11.30 重建版）\n\n二进制内报版本：**1.11.30-panel**（重建，构建戳 b154aa9）。\n\n## 本版内容\n\n**任务自动化（新增）**\n\n| 任务 | 奖励 |\n|---|---|\n| `expert_use_maidehao` / `douyinyin` / `shangjia_xuanchuan` / `bowangwang` | 各 50 分 |\n| `WorkBuddy_Valorant`（无畏契约拼豆专家） | 100 分 |\n\n并修复单任务入口不先 `accept` 的缺陷（新任务要求 accepted 后才计分）。\n\n**面板**\n\n- 更新弹窗显示更新内容（`latest.json.notes` 优先，回退 `RELEASE-NOTES.md`）；\n- 开机检查更新改为静默：只点亮右上角徽标，不再弹窗；\n- 同版本竞速择新，避免旧清单用旧 sha 抢赢。\n\n**余额**\n\n本地扣减由 `math.Ceil` 改为小数累计：旧逻辑每条至少扣 1 分（真实只有 0.02~0.09），\n余额虚降后被 5 分钟刷新拉回；现在攒够 1 分才扣。\n\n**重建补入**\n\n启动对账清理过期的「更新失败」状态：当前版本已达到/超过失败时的目标版本时，\n把 `update-state.json` 里的旧失败清成 `idle`；目标确实没装上则保留提示。\n\n## 升级\n\n面板「立即更新」，或 `msiexec /i workbuddy2api-1.11.30-x64.msi /passive`。\n\n## 注意\n\n同版本号重建：二进制 hash 与更早的 1.11.30 不同（本次 `98c583df…`）。\n已在该版本上的用户不会收到自动提示，需手动重装；从更早版本升级不受影响。\n",
+  "generated": "2026-11-04T20:59:11",
+  "notes": "# WorkBuddy2API 更新说明（1.11.31）\n\n二进制内报版本：**1.11.31-panel**（构建戳 f18a00b）。\n\n## 本次修复\n\n**任务中心：新任务可以「一键完成」了**\n\n1.11.30 后端已支持 5 个活动任务，但前端 `AUTO_TASKS` 映射没跟上，\n任务中心里这些任务只显示「接受」：\n\n```text\nexpert_use_maidehao / douyinyin / shangjia_xuanchuan / bowangwang  （各 50 分）\nWorkBuddy_Valorant（无畏契约拼豆专家，100 分）\n```\n\n现在补齐映射，并加一致性守卫：后端 `autoActions` 的任一 code 若未出现在前端表，测试变红。\n\n**配置页：7 个自适应分块参数此前改了不生效**\n\n`cfgForm` 里有 9 个 `tier_*` 控件，`CFG_MAP` 只登记 1 个，其余 7 个从未被读写 ——\n改了不会保存，重新打开还是空。已按 `pool` 结构体补全，并加守卫：\n`cfgForm` 每个控件名必须在 `CFG_MAP` 登记。\n\n## 继承 1.11.30\n\n- 活动任务自动化（含单任务入口先 accept 修复）；\n- 更新弹窗显示更新内容；开机检查更新静默（只亮徽标）；\n- 同版本竞速择新；余额本地扣减由 `ceil` 改小数累计；\n- 启动对账清理过期的「更新失败」状态。\n\n## 升级\n\n面板「立即更新」，或 `msiexec /i workbuddy2api-1.11.31-x64.msi /passive`。\n",
   "msi": {
-    "name": "workbuddy2api-1.11.30-x64.msi",
-    "url": "https://github.com/susuqqim/utils/releases/download/v1.11.30/workbuddy2api-1.11.30-x64.msi",
-    "sha256": "942be8dd9da4a4453777cfbecb4b1d34e5045f8d7f04dfdf3f03d5e856baaa7b",
+    "name": "workbuddy2api-1.11.31-x64.msi",
+    "url": "https://github.com/susuqqim/utils/releases/download/v1.11.31/workbuddy2api-1.11.31-x64.msi",
+    "sha256": "ac60f2b776a0f63c4f7ca9c443121fef2a6a8aa214740293efcb89f4198cd607",
     "size": 4243456
   }
 }

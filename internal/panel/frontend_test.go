@@ -306,3 +306,74 @@ func TestStartupUpdateCheckIsSilent(t *testing.T) {
 		t.Error("启动路径不应再自动弹窗（应只更新徽标）")
 	}
 }
+
+// 前端 AUTO_TASKS 必须与后端 autoActions 对齐：两边各维护一份清单，
+// 漏一边的表现是「后端能跑、面板不出按钮」（2026-11 新 batch 就踩过）。
+func TestFrontendAutoTasksCoversBackend(t *testing.T) {
+	b, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	start := strings.Index(src, "const AUTO_TASKS = {")
+	if start < 0 {
+		t.Fatal("app.js 里找不到 AUTO_TASKS 表")
+	}
+	end := strings.Index(src[start:], "\n};")
+	if end < 0 {
+		t.Fatal("AUTO_TASKS 表没有结束标记")
+	}
+	block := src[start : start+end]
+	missing := []string{}
+	for _, a := range autoActions {
+		if !strings.Contains(block, "'"+a.TaskCode+"'") && !strings.Contains(block, "\""+a.TaskCode+"\"") {
+			missing = append(missing, a.TaskCode)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("后端有、前端 AUTO_TASKS 缺（面板不会出「一键完成」按钮）：%v", missing)
+	}
+}
+
+// 配置表单里每个控件都必须在 CFG_MAP 登记：漏登记的表现是「改了不生效、回填永远空」
+// （2026-11 审计实测：7 个 tier_* 控件就是这种状态）。
+func TestConfigFormControlsAllMapped(t *testing.T) {
+	htmlBytes, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsBytes, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	htmlSrc, jsSrc := string(htmlBytes), string(jsBytes)
+	start := strings.Index(htmlSrc, `id="cfgForm"`)
+	if start < 0 {
+		t.Fatal("index.html 里找不到 cfgForm")
+	}
+	end := strings.Index(htmlSrc[start:], "</form>")
+	if end < 0 {
+		t.Fatal("cfgForm 没有结束标签")
+	}
+	form := htmlSrc[start : start+end]
+	nameRe := regexp.MustCompile(`name="([A-Za-z0-9_\[\].\-]+)"`)
+	mapStart := strings.Index(jsSrc, "const CFG_MAP = {")
+	mapEnd := strings.Index(jsSrc[mapStart:], "\n};")
+	if mapStart < 0 || mapEnd < 0 {
+		t.Fatal("app.js 里找不到 CFG_MAP")
+	}
+	cfgMap := jsSrc[mapStart : mapStart+mapEnd]
+	var missing []string
+	for _, m := range nameRe.FindAllStringSubmatch(form, -1) {
+		name := m[1]
+		if strings.ContainsAny(name, "[]") { // 数组控件（如 hours 多值）单独处理，不在此约定内
+			continue
+		}
+		if !strings.Contains(cfgMap, name+":") {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("表单控件未在 CFG_MAP 登记（改了不生效）：%v", missing)
+	}
+}

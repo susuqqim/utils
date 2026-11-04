@@ -563,6 +563,17 @@ const CFG_MAP = {
   breaker_cooldown: ['pool', 'breaker_cooldown'], breaker_cooldown_max: ['pool', 'breaker_cooldown_max'],
   idle_weight_per_hour: ['pool', 'idle_weight_per_hour'], idle_weight_max: ['pool', 'idle_weight_max'],
   chunk_quota_credits: ['pool', 'chunk_quota_credits'],
+  // 自适应三档分块的阈值/额度/轮数：表单里早就有这些控件，但 CFG_MAP 漏登记，
+  // 表现为「改了不生效、回填永远空」。7 个 key 与 pool 结构体的 json tag 一一对应。
+  tier_unknown_quota: ['pool', 'tier_unknown_quota'],
+  tier_unknown_max_reqs: ['pool', 'tier_unknown_max_reqs'],
+  tier_cheap_cost_cutoff: ['pool', 'tier_cheap_cost_cutoff'],
+  tier_cheap_quota: ['pool', 'tier_cheap_quota'],
+  tier_cheap_max_reqs: ['pool', 'tier_cheap_max_reqs'],
+  tier_normal_max_reqs: ['pool', 'tier_normal_max_reqs'],
+  tier_flagship_cost_cutoff: ['pool', 'tier_flagship_cost_cutoff'],
+  tier_flagship_quota: ['pool', 'tier_flagship_quota'],
+  tier_flagship_max_reqs: ['pool', 'tier_flagship_max_reqs'],
   critical_expire_hours: ['pool', 'critical_expire_hours'],
   urgent_expire_hours: ['pool', 'urgent_expire_hours'],
   near_expire_days: ['pool', 'near_expire_days'],
@@ -973,7 +984,13 @@ const AUTO_TASKS = {
   'Sequential_Tasks_4': '小程序定时任务（预留，每日零点解锁一环）：accept → 定时任务创建事件 → 领奖（判据待解锁验证）',
   'Sequential_Tasks_5': '小程序使用 GLM5.2（预留）：accept → 带模型字段的 mini 对话上报 → 领奖（判据待解锁验证）',
   'Sequential_Tasks_6': '小程序十次对话（预留）：accept → mini 对话上报 ×target（自动补差额）→ 领奖',
-  'Sequential_Tasks_7': '体验灵感功能（预留，疑 PC 口径）：accept → 灵感事件组（PC+mp 双形态）→ 领奖（判据待解锁验证）'
+  'Sequential_Tasks_7': '体验灵感功能（预留，疑 PC 口径）：accept → 灵感事件组（PC+mp 双形态）→ 领奖（判据待解锁验证）',
+  // 2026-11 新一批「体验某个专家」任务：expertId 取自任务 jump_url，走真实召唤+使用链。
+  'expert_use_maidehao': '真实召唤「中国电商运营专家」并对话一次（四账号实测点亮）',
+  'expert_use_douyinyin': '真实召唤「抖音策略师」并对话一次（四账号实测点亮）',
+  'expert_use_shangjia_xuanchuan': '真实召唤「商家宣传页与海报设计师」并对话一次（四账号实测点亮）',
+  'expert_use_bowangwang': '真实召唤「直播电商教练」并对话一次（四账号实测点亮）',
+  'WorkBuddy_Valorant': '真实召唤「无畏契约拼豆专家」并对话一次（expertId 由市场全量检索定位）'
 };
 
 function openTasks(uid) {
