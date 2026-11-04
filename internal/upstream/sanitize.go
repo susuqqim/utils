@@ -155,6 +155,11 @@ func sanitizeText(text string) string {
 	for _, rw := range sanitizeRewrites {
 		text = strings.ReplaceAll(text, rw[0], rw[1])
 	}
+	// DSH 提示词身份句（DeepSeek 产品名 / DSH 自称）：整句精确匹配 + 同义替换，
+	// 规则与夹具见 sanitize_dsh_prompt.go / testdata/dsh_prompt_paragraphs.txt。
+	for _, rw := range dshPromptRewrites {
+		text = strings.ReplaceAll(text, rw[0], rw[1])
+	}
 	if sanitizeOmoRe.MatchString(text) {
 		text = sanitizeOmoRe.ReplaceAllString(text, "Sisyphus-Junior - Focused executor")
 	}
@@ -186,6 +191,12 @@ func sanitizeText(text string) string {
 // header 键名与 OmO 指纹有大小写变体，快速路径漏掉时再落正则（(?i)）兜底。
 func hasFingerprint(text string) bool {
 	for _, f := range sanitizeFeatures {
+		if strings.Contains(text, f) {
+			return true
+		}
+	}
+	// DSH 提示词身份句的锚点（产品名 / 自称 / 全局变量名）。
+	for _, f := range dshPromptProbes {
 		if strings.Contains(text, f) {
 			return true
 		}
