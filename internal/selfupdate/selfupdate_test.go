@@ -391,3 +391,35 @@ func TestApplyFallsBackToMirror(t *testing.T) {
 		t.Fatalf("下载文件不存在: %v", err)
 	}
 }
+
+// 失败的更新状态是「上一次尝试的结论」，不是当前事实：如果当前版本已经达到/超过
+// 当时的目标（例如后来用本地 MSI 装上了），启动对账必须把它清成 idle，
+// 否则面板会永远挂着一条旧的“下载失败”。
+func TestReconcileClearsStaleFailureWhenTargetReached(t *testing.T) {
+	dir := t.TempDir()
+	a := newApplier(t, dir, spawnOK)
+	if err := a.persist(State{Stage: StageFailed, From: "1.11.28-panel", To: "1.11.29",
+		Percent: 100, Error: "下载失败"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if s := a.Reconcile("1.11.30"); s.Stage != StageIdle {
+		t.Fatalf("当前版本已超过失败目标，应清成 idle，实得 %+v", s)
+	}
+	if s := a.readStateFile(); s.Stage != StageIdle {
+		t.Fatalf("状态文件也应被清成 idle，实得 %+v", s)
+	}
+}
+
+// 反向：失败目标真的没装上（当前更旧），失败状态要保留，提示仍然有效。
+func TestReconcileKeepsFailureWhenTargetMissing(t *testing.T) {
+	dir := t.TempDir()
+	a := newApplier(t, dir, spawnOK)
+	if err := a.persist(State{Stage: StageFailed, From: "1.11.28-panel", To: "1.11.29",
+		Percent: 100, Error: "下载失败"}); err != nil {
+		t.Fatal(err)
+	}
+	if s := a.Reconcile("1.11.28"); s.Stage != StageFailed {
+		t.Fatalf("目标未装上时失败状态应保留，实得 %+v", s)
+	}
+}

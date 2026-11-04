@@ -1,16 +1,16 @@
 {
   "version": "1.11.30",
-  "sha256": "caf3a2628effab87f1999efdddf06076c2ed52cab9037425d586c0d21633f4e9",
-  "size": 11955712,
+  "sha256": "146909fda92382c6b4610f549ad28309c382f8336e44117ade40b8a70c9214e5",
+  "size": 11957248,
   "urls": [
     "https://github.com/susuqqim/utils/releases/download/v1.11.30/wb2api-core.exe"
   ],
-  "generated": "2026-11-04T20:26:46",
-  "notes": "# WorkBuddy2API 更新说明（1.11.30）\n\n二进制内报版本：**1.11.30-panel**（干净树构建，构建戳 7330476）。\n\n## 一、任务自动化：新一批活动任务\n\n上游 2026-11 下发的一批限时任务已接入「一键完成」：\n\n| 任务 | 奖励 | 说明 |\n|---|---|---|\n| `expert_use_maidehao` | 50 分 | 体验「中国电商运营专家」 |\n| `expert_use_douyinyin` | 50 分 | 体验「抖音策略师」 |\n| `expert_use_shangjia_xuanchuan` | 50 分 | 体验「商家宣传页与海报设计师」 |\n| `expert_use_bowangwang` | 50 分 | 体验「直播电商教练」 |\n| `WorkBuddy_Valorant` | 100 分 | 体验「无畏契约拼豆专家」（expertId 由市场全量检索定位） |\n\n同时修复单任务入口不先 `accept` 的缺陷：新任务要求 `accepted` 后才计分，\n旧实现只跑动作，表现为「上报成功但进度不归账」。实测 4 个账号每个 +300 分，单条约 5 秒。\n\n`wb_wechat_oa_subscribe_task`（关注公众号满 24 小时）不自动化。\n\n## 二、面板：更新弹窗显示更新内容\n\n- 优先读 `latest.json` 的 `notes` 字段（零额外请求）；\n- 缺省时回退拉同 Release 的 `RELEASE-NOTES.md`；\n- 3 秒超时、64KB 上限，读取失败只隐藏区块，不影响检查结果。\n\n## 三、面板：开机检查更新改为静默\n\n以前每次打开面板都会弹更新框。现在启动只在右上角点亮徽标，\n详情仍需主动点徽标或左下角「检查更新」；手动检查行为不变。\n\n## 四、更新检查：同版本竞速择新\n\n发版后 raw/jsDelivr 可能仍返回上一个构建的清单（版本号相同、sha 是旧包）。\n旧逻辑「谁先回谁赢」会让面板显示旧 sha、点更新下到旧包并校验失败。\n现在同版本按「有无 notes → generated 时间」择优。\n\n## 五、余额：本地扣减改成小数累计\n\n旧实现 `math.Ceil(credit)` 让**每条请求至少扣 1 分**，而单请求真实消耗只有 0.02~0.09 分；\n本地余额因此以 10~50 倍速度虚减，5 分钟一次的上游刷新再把它拉回，\n面板表现为「莫名掉一截又弹回、两次刷新之间不动」。\n\n现在攒够 1 分才扣、余数保留，刷新时清零余数。实测 20 条请求真实消耗 1.79 分，整数只掉 1。\n余额显示保持整数（按要求不做小数展示）。\n\n## 六、发布链修复\n\n- 公有仓 `sanitize.go` 补齐 DSH 身份句接线；\n- 删除公有仓残留 `update_race_test.go` 与 10.4MB 的 `signin_bin`；\n- 公有仓 `latest.json` 与 Release 保持一致；\n- 分发二进制 `wb2api_linux` / `credit` / `login` 刷新到 1.11.29 构建。\n\n## 七、升级\n\n面板「立即更新」，或 `msiexec /i workbuddy2api-1.11.30-x64.msi /passive`。\n单文件替换：先 `wb2api stop`，替换后 `wb2api start`。\n\n## 八、校验\n\n`SHA256SUMS` 用发布资产名；本地文件名对应关系：\n`wb2api-core.exe` ↔ `release/native/wb2api-windows-amd64.exe`，\n`RELEASE-NOTES.md` ↔ `release/native/更新说明.md`。\n",
+  "generated": "2026-11-04T20:34:30",
+  "notes": "# WorkBuddy2API 更新说明（1.11.30 重建版）\n\n二进制内报版本：**1.11.30-panel**（重建，构建戳 363b2b6）。\n\n## 本版内容\n\n**任务自动化（新增）**\n\n| 任务 | 奖励 |\n|---|---|\n| `expert_use_maidehao` / `douyinyin` / `shangjia_xuanchuan` / `bowangwang` | 各 50 分 |\n| `WorkBuddy_Valorant`（无畏契约拼豆专家） | 100 分 |\n\n并修复单任务入口不先 `accept` 的缺陷（新任务要求 accepted 后才计分）。\n\n**面板**\n\n- 更新弹窗显示更新内容（`latest.json.notes` 优先，回退 `RELEASE-NOTES.md`）；\n- 开机检查更新改为静默：只点亮右上角徽标，不再弹窗；\n- 同版本竞速择新，避免旧清单用旧 sha 抢赢。\n\n**余额**\n\n本地扣减由 `math.Ceil` 改为小数累计：旧逻辑每条至少扣 1 分（真实只有 0.02~0.09），\n余额虚降后被 5 分钟刷新拉回；现在攒够 1 分才扣。\n\n**重建补入**\n\n启动对账会清理过期的「更新失败」状态：若当前版本已达到/超过失败时的目标版本，\n把 `update-state.json` 里的旧失败清成 `idle`，面板不再永久挂着一条历史下载失败；\n目标确实没装上时仍保留提示。\n\n## 升级\n\n面板「立即更新」，或 `msiexec /i workbuddy2api-1.11.30-x64.msi /passive`。\n\n## 注意\n\n同版本号重建：二进制 hash 与更早的 1.11.30 不同。已在该版本上的用户不会收到自动提示，\n需手动重装；从更早版本升级不受影响。\n",
   "msi": {
     "name": "workbuddy2api-1.11.30-x64.msi",
     "url": "https://github.com/susuqqim/utils/releases/download/v1.11.30/workbuddy2api-1.11.30-x64.msi",
-    "sha256": "0f0b1b6ccc3cfe95d918ae64c2a79f16785820f834fde711f26b934aad5eb60e",
-    "size": 4243456
+    "sha256": "b6c53241a7b2b04b66d0366373ce7773b828c44cefd8c330d0e8c679065f6f74",
+    "size": 4239360
   }
 }

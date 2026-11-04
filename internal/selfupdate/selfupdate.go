@@ -225,6 +225,24 @@ func (a *Applier) readStateFile() State {
 // versionEqual 按点分段比较前导数字，忽略 -panel/-beta 之类后缀。
 // 为什么需要：进程内的 appVersion 是 "1.11.20-panel"，而 latest.json 的 version 是 "1.11.20"，
 // 直接字符串比较会把"更新成功"误判成"版本没变 → 回滚"。
+// versionNewerThan 报告 a 是否比 b 新（只比前导数字段，够用于"装上了/没装上"这类判断）。
+func versionNewerThan(a, b string) bool {
+	sa, sb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(sa) || i < len(sb); i++ {
+		var na, nb int
+		if i < len(sa) {
+			na = leadingNum(sa[i])
+		}
+		if i < len(sb) {
+			nb = leadingNum(sb[i])
+		}
+		if na != nb {
+			return na > nb
+		}
+	}
+	return false
+}
+
 func versionEqual(a, b string) bool {
 	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
 	for i := 0; i < len(pa) || i < len(pb); i++ {
@@ -273,6 +291,14 @@ func (a *Applier) Reconcile(current string) State {
 		s.Stage = StageFailed
 		s.Error = "上次更新在下载/校验阶段被中断"
 		_ = a.persist(s)
+	case StageFailed:
+		// 失败状态是「上一次尝试的结论」，不是当前事实：如果现在跑的版本已经
+		// 达到或超过当时的目标版本（例如后来又用本地 MSI 装上了），这条失败
+		// 就过期了。不去清它，面板会永远显示一条几个月前的下载失败。
+		if s.To != "" && !versionNewerThan(s.To, current) {
+			s = State{Stage: StageIdle}
+			_ = a.persist(s)
+		}
 	}
 	_ = os.Remove(a.lockPath())
 	a.mu.Lock()
