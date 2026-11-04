@@ -194,3 +194,29 @@ func TestCheckUpdateForCarriesNotesEndToEnd(t *testing.T) {
 		t.Fatalf("notes 未带回: %q (err=%q)", res.Notes, res.Error)
 	}
 }
+
+// 同版本并发竞速必须选「真·新清单」：第三轮审计 F1 实测 raw/jsDelivr 会返回上一个构建的
+// 清单（版本号相同、sha256 是旧包的），先到先得会让立即更新校验失败。
+func TestBetterManifestTieBreak(t *testing.T) {
+	oldM := updateManifest{Version: "1.11.29", SHA256: "old", Notes: "", Generated: "2026-11-04T14:22:00"}
+	newM := updateManifest{Version: "1.11.29", SHA256: "new", Notes: "说明", Generated: "2026-11-04T15:40:00"}
+	if !betterManifest(newM, oldM) {
+		t.Fatal("带 notes 的新清单应胜出")
+	}
+	if betterManifest(oldM, newM) {
+		t.Fatal("旧清单不该胜出")
+	}
+	// 都没有 notes 时按 generated 判新。
+	a := updateManifest{Version: "1.11.29", Generated: "2026-11-04T14:22:00"}
+	b := updateManifest{Version: "1.11.29", Generated: "2026-11-04T15:40:00"}
+	if !betterManifest(b, a) || betterManifest(a, b) {
+		t.Fatal("generated 更晚的应胜出")
+	}
+	// 版本更高永远优先。
+	if !betterManifest(updateManifest{Version: "1.11.30"}, b) {
+		t.Fatal("更高版本应胜出")
+	}
+	if betterManifest(updateManifest{Version: "1.11.28"}, b) {
+		t.Fatal("更低版本不该胜出")
+	}
+}

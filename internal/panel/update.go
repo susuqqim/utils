@@ -104,6 +104,8 @@ type updateManifest struct {
 	// Notes 更新内容（可选）：发版时可直接写进 latest.json，省一次请求；
 	// 缺省时面板会回退去拉同 Release 的 RELEASE-NOTES.md。
 	Notes string `json:"notes,omitempty"`
+	// Generated 清单生成时间（RFC3339）：同版本时用它判"哪份更新"。
+	Generated string `json:"generated,omitempty"`
 }
 
 // updateCheckResult 是给面板的响应。
@@ -422,7 +424,7 @@ func gatherManifest(ctx context.Context, sources []string, client *http.Client, 
 	for i := 0; i < len(sources); i++ {
 		select {
 		case r := <-ch:
-			if r.err == nil && (!found || compareVersion(r.m.Version, best.m.Version) > 0) {
+			if r.err == nil && (!found || betterManifest(r.m, best.m)) {
 				best, found = r, true
 			}
 		case <-ctx.Done():
@@ -433,6 +435,25 @@ func gatherManifest(ctx context.Context, sources []string, client *http.Client, 
 		return best.m, best.u, true
 	}
 	return updateManifest{}, "", false
+}
+
+// betterManifest 决定并发竞速里该留哪一份清单。
+//
+// 只比版本号不够：发版后 raw/jsDelivr 可能仍返回**上一个构建**的清单，
+// 版本号相同但 sha256/size 是旧的 —— 谁先回谁就赢，会让"立即更新"下到旧包
+// 并因 sha256 不符失败（2026-11-04 第三轮审计 F1 实测）。
+//
+// 同版本时的次序：
+//  1. 有 notes 的优于没有（新版清单才带发版说明）；
+//  2. 再看 generated（RFC3339，字符串序即时间序）。
+func betterManifest(cand, cur updateManifest) bool {
+	if c := compareVersion(cand.Version, cur.Version); c != 0 {
+		return c > 0
+	}
+	if (cand.Notes != "") != (cur.Notes != "") {
+		return cand.Notes != ""
+	}
+	return cand.Generated > cur.Generated
 }
 
 // fetchOneManifest 拉单个源并解析；空 version 视为失败。
