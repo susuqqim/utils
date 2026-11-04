@@ -171,8 +171,8 @@ func TestChatRealmSelectionAndBodyRewrite(t *testing.T) {
 	if gotPath != "/v2/chat/completions" {
 		t.Errorf("cn chat path=%q want /v2/chat/completions", gotPath)
 	}
-	if gotMsgs != 1 { // CN 不补 system
-		t.Errorf("cn chat messages=%d want 1 (no system fallback)", gotMsgs)
+	if gotMsgs != 2 { // 2026-11 起 CN 同样补首条 system（上游 11128 结构校验：first message is not system prompt）
+		t.Errorf("cn chat messages=%d want 2 (system fallback applies to CN too)", gotMsgs)
 	}
 }
 

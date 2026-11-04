@@ -186,14 +186,15 @@ func TestGlobalRefreshUsesGlobalChatBase(t *testing.T) {
 	}
 }
 
-// TestCNChatPathUnchanged 零回归：CN 账号（realm=cn）chat 仍打 CN base + /v2/chat/completions，
-// 无首条 system 兜底（ensureConsoleSystem 只对 global）。
-func TestCNChatPathUnchanged(t *testing.T) {
-	var gotPath, gotMsgsJSON string
+// TestCNChatInjectsFirstSystem 2026-11 上游收紧后的新契约：CN 与 global 一样，
+// 出站首条消息必须是 system —— 否则上游回 400 11128 "first message is not system prompt"。
+// 本用例锁「CN 也会被补 system」+「路径不变」两件事（回退到只对 global 补 → 这里变红）。
+func TestCNChatInjectsFirstSystem(t *testing.T) {
+	var gotPath, gotBody string
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		gotPath = r.URL.Path
 		raw, _ := io.ReadAll(r.Body)
-		gotMsgsJSON = string(raw)
+		gotBody = string(raw)
 		return &http.Response{
 			StatusCode: 200,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -209,9 +210,11 @@ func TestCNChatPathUnchanged(t *testing.T) {
 	if gotPath != "/v2/chat/completions" {
 		t.Errorf("cn chat path=%q", gotPath)
 	}
-	// 零回归：body 不因 ensureConsoleSystem 注入 system。
-	if bytes.Contains([]byte(gotMsgsJSON), []byte(`"system"`)) {
-		t.Errorf("cn chat body should not be modified with system fallback: %s", gotMsgsJSON)
+	if !strings.Contains(gotBody, `"role":"system"`) {
+		t.Fatalf("CN 出站首条必须是 system（上游 11128 结构校验），实得: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "You are a helpful assistant.") {
+		t.Fatalf("缺少中性 fallback system，实得: %s", gotBody)
 	}
 }
 

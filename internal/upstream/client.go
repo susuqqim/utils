@@ -1140,9 +1140,9 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	// global 首次路径 404/405 时换 fallback 路径重试；ensureConsoleSystem 在 prepareBody 后统一套用
 	// 全局脚本：首条消息非 system 时前置兜底 system（防 console 域上游 code 11-128）。
 	prepared := c.prepareBody(body, a.Realm())
-	if c.globalOn(a) {
-		prepared = ensureConsoleSystem(prepared)
-	}
+	// 首条 system 兜底对**两个 realm** 都生效：上游 2026-11 起把"首条消息必须是 system"
+	// 纳入渠道校验（11128 first message is not system prompt），CN 不再豁免。
+	prepared = ensureFirstSystem(prepared)
 	for attempt, path := range c.chatPaths(a) {
 		url := c.chatBase(a) + path
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(prepared))

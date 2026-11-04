@@ -270,11 +270,21 @@ func normalizeImageURL(obj map[string]any) {
 	}
 }
 
-// ensureConsoleSystem global realm 兜底 system 注入（吸收 PR #45，防 console 域上游 code 11-128）：
-// 首条消息非 system 时在 messages 最前补一条 fallback system（"You are a helpful assistant."）。
-// 仅对 global 请求调用（CN 现状不动；即使首条就是 system 也不重复注入）。
+// ensureConsoleSystem 兼容旧名：等价 ensureFirstSystem（global 与 CN 共用同一条上游规则）。
+func ensureConsoleSystem(body []byte) []byte { return ensureFirstSystem(body) }
+
+// ensureFirstSystem 保证出站请求的首条消息是 system —— 上游 2026-11 起把这条做成渠道校验的一部分：
+// 首条不是 system 就回 400 code=11128 "first message is not system prompt"（结构判定，不是内容指纹）。
+//
+// 处理顺序（最小改动，优先保留客户端已有语义）：
+//  1. 首条已是 system → 原样返回（零改写，不碰前缀缓存）；
+//  2. 后面有 system → 把它整体前移（内容一字不动，其余消息相对顺序不变）；
+//  3. 完全没有 system → 在最前补一条中性 fallback（"You are a helpful assistant."）。
+//
+// 为什么不再只对 global 生效：CN 域同样执行该结构校验；此前 CN 直通，passthrough 模式下
+// client 若首条不是 system 就会整单 400。
 // body 不可解析时原样返回（与 prepareBody 语义一致：坏 body 不在这里二次错误化）。
-func ensureConsoleSystem(body []byte) []byte {
+func ensureFirstSystem(body []byte) []byte {
 	if len(body) == 0 {
 		return body
 	}
@@ -286,18 +296,40 @@ func ensureConsoleSystem(body []byte) []byte {
 	if !ok || len(msgs) == 0 {
 		return body
 	}
-	first, ok := msgs[0].(map[string]any)
-	if ok {
-		if role, _ := first["role"].(string); strings.EqualFold(strings.TrimSpace(role), "system") {
-			return body // 首条已是 system：不注入
+	isSystem := func(v any) bool {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return false
 		}
+		role, _ := m["role"].(string)
+		return strings.EqualFold(strings.TrimSpace(role), "system")
 	}
-	obj["messages"] = append([]any{map[string]any{"role": "system", "content": "You are a helpful assistant."}}, msgs...)
-	out, err := json.Marshal(obj)
+	if isSystem(msgs[0]) {
+		return body // 已满足，零改写
+	}
+	out := msgs
+	moved := false
+	for i := 1; i < len(msgs); i++ {
+		if !isSystem(msgs[i]) {
+			continue
+		}
+		head := msgs[i]
+		rest := make([]any, 0, len(msgs)-1)
+		rest = append(rest, msgs[:i]...)
+		rest = append(rest, msgs[i+1:]...)
+		out = append([]any{head}, rest...)
+		moved = true
+		break
+	}
+	if !moved {
+		out = append([]any{map[string]any{"role": "system", "content": "You are a helpful assistant."}}, msgs...)
+	}
+	obj["messages"] = out
+	raw, err := json.Marshal(obj)
 	if err != nil {
 		return body
 	}
-	return out
+	return raw
 }
 
 // maxTokensAsFloat 取 max_tokens 的数值（三型兼容），非数值/缺省返回 false。
