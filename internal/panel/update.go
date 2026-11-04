@@ -59,6 +59,11 @@ func manifestNameFor(channel string) string {
 // 预览通道不加 Release 直连：github 的 releases/latest 只指向最新**非预发布**，
 // 预发布清单放 main 分支（raw / jsDelivr 可取），Release 里只放资产。
 func manifestSourcesFor(channel string) []string {
+	// 测试注入点：非空时完全替换候选源。测试允许触网，但更新检查要多源竞速 4s，
+	// 用它把用例钉在本地 httptest 上，跑得快也不受外网抖动影响。
+	if len(updateSourcesOverride) > 0 {
+		return append([]string(nil), updateSourcesOverride...)
+	}
 	name := manifestNameFor(channel)
 	out := make([]string, 0, 8)
 	for _, tpl := range updateManifestSourceTemplates {
@@ -84,6 +89,10 @@ func manifestSourcesFor(channel string) []string {
 	return out
 }
 
+// updateSourcesOverride 仅供测试：非空时替换清单候选源（生产恒为空）。
+// 目的是让更新检查的用例快且稳定，不是禁止测试触网。
+var updateSourcesOverride []string
+
 // updateManifest 是 latest.json 的结构（与 scripts/update/*.ps1 一致）。
 type updateManifest struct {
 	Version string   `json:"version"`
@@ -92,6 +101,9 @@ type updateManifest struct {
 	URLs    []string `json:"urls"`
 	// MSI 自更新段（2026-10-22 新增）：缺省时退化为"只提示 + 给下载链接"。
 	MSI *selfupdate.MSI `json:"msi,omitempty"`
+	// Notes 更新内容（可选）：发版时可直接写进 latest.json，省一次请求；
+	// 缺省时面板会回退去拉同 Release 的 RELEASE-NOTES.md。
+	Notes string `json:"notes,omitempty"`
 }
 
 // updateCheckResult 是给面板的响应。
@@ -115,6 +127,8 @@ type updateCheckResult struct {
 	Source string `json:"source,omitempty"`
 	// Stale=true：本次拉取失败，展示的是上一次成功结果（面板需提示"非实时"）。
 	Stale bool `json:"stale,omitempty"`
+	// Notes 更新内容（markdown 原文）：面板在弹窗里展示，便于升级前判断改了什么。
+	Notes string `json:"notes,omitempty"`
 }
 
 // newUpdateTransport 构造更新检测专用 Transport。
@@ -314,6 +328,58 @@ func parseAllDigits(s string) (int, bool) {
 	return n, true
 }
 
+// 更新内容（release notes）读取。
+//
+// 两级来源：
+//  1. latest.json 里的 notes 字段（发版时写入，零额外请求）；
+//  2. 同 Release 的 RELEASE-NOTES.md 资产（兼容旧清单 / 手写清单）。
+//
+// 读取失败一律降级为空串 —— 更新检查本身不能因为"说明读不到"而失败。
+const (
+	releaseNotesAsset = "RELEASE-NOTES.md"
+	maxNotesBytes     = 64 << 10 // 64KB：足够放完整发版说明，又不至于被异常源打爆
+)
+
+// releaseNotesURL 由下载地址推导说明资产地址（.../wb2api-core.exe -> .../RELEASE-NOTES.md）。
+// 同时兼容 gh-proxy 前缀形式，因为只是字符串替换。
+func releaseNotesURL(urls []string) string {
+	for _, u := range urls {
+		if strings.Contains(u, "wb2api-core.exe") {
+			return strings.Replace(u, "wb2api-core.exe", releaseNotesAsset, 1)
+		}
+	}
+	return ""
+}
+
+// fetchReleaseNotes 拉一次说明原文；任何错误都返回空串（不抛错）。
+func fetchReleaseNotes(ctx context.Context, client *http.Client, u string) string {
+	if u == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxNotesBytes+1))
+	if err != nil {
+		return ""
+	}
+	if len(b) > maxNotesBytes {
+		b = b[:maxNotesBytes]
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // fetchUpdateManifest 依次尝试各源；全部失败返回错误。
 func fetchUpdateManifest(ctx context.Context) (updateManifest, string, error) {
 	sources := manifestSourcesFor(CurrentChannel())
@@ -394,6 +460,23 @@ func fetchOneManifest(ctx context.Context, client *http.Client, u string) (updat
 	return m, nil
 }
 
+// fillUpdateNotes 填充更新内容：优先用清单里的 notes，否则回退拉同 Release 的说明资产。
+// 说明读取失败不影响检查结果（空串 = 面板不显示该区块）。
+func fillUpdateNotes(ctx context.Context, res *updateCheckResult, m updateManifest) {
+	res.Notes = strings.TrimSpace(m.Notes)
+	if res.Notes != "" || !res.Available {
+		return
+	}
+	noteURL := releaseNotesURL(m.URLs)
+	if noteURL == "" {
+		return
+	}
+	if res.Notes = fetchReleaseNotes(ctx, updateDirectClient, noteURL); res.Notes != "" {
+		return
+	}
+	res.Notes = fetchReleaseNotes(ctx, updateProxyClient, noteURL)
+}
+
 // CheckUpdateFor 供非面板入口（托盘启动自检）使用：不依赖 Panel 实例。
 func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheckResult {
 	updateCacheMu.Lock()
@@ -418,6 +501,7 @@ func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheck
 		if last.Latest != "" {
 			res.Latest, res.SHA256, res.Size, res.URL = last.Latest, last.SHA256, last.Size, last.URL
 			res.MSI, res.Source, res.Stale = last.MSI, last.Source, true
+			res.Notes = last.Notes
 			res.Available = versionNewer(res.Latest, current)
 			res.CanApply = res.MSI != nil
 			res.Error = "检查失败，显示上次成功（" + updateLastGoodAt.Format("01-02 15:04") + "）：" + err.Error()
@@ -433,6 +517,7 @@ func CheckUpdateFor(ctx context.Context, current string, force bool) updateCheck
 		res.MSI = m.MSI
 		res.CanApply = m.MSI != nil
 		res.Source = src
+		fillUpdateNotes(ctx, &res, m)
 		updateCacheMu.Lock()
 		updateLastGood, updateLastGoodAt = res, time.Now()
 		updateCacheMu.Unlock()

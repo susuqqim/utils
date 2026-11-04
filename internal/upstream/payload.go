@@ -4,6 +4,7 @@
 package upstream
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"strings"
@@ -289,7 +290,11 @@ func ensureFirstSystem(body []byte) []byte {
 		return body
 	}
 	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// 保精度：整包往返若走 float64，seed/大整数参数会被静默改写
+	// （9223372036854775807 -> 9223372036854776000）。UseNumber 后按原文数字透传。
+	dec.UseNumber()
+	if err := dec.Decode(&obj); err != nil {
 		return body
 	}
 	msgs, ok := obj["messages"].([]any)

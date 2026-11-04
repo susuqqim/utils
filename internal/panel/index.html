@@ -1352,6 +1352,10 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <div>最新版本：<b id="updLatest">-</b></div>
           <div id="updAvailRow">状态：<b id="updAvail" style="color:var(--ok)">已是最新</b></div>
           <div id="updMetaRow" style="color:var(--ink-3);font-size:12.5px">大小 <span id="updSize">-</span> · sha256 <span id="updSha">-</span></div>
+          <div id="updNotesRow" style="display:none;margin-top:10px">
+            <div style="color:var(--ink-3);font-size:12.5px;margin-bottom:4px">更新内容</div>
+            <pre id="updNotes" style="max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.65;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px;margin:0;font-family:inherit"></pre>
+          </div>
           <div id="updErrRow" style="display:none;color:var(--bad);font-size:12.5px">检查失败：<span id="updErr">-</span></div>
           <div id="updUrlRow" style="display:none;margin-top:8px">
             <div style="color:var(--ink-3);font-size:12.5px;margin-bottom:4px">下载地址（复制到浏览器或更新器使用）</div>

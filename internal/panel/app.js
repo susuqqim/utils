@@ -2396,6 +2396,10 @@ function openUpdateDialog(d) {
   (q('updSha')||{}).textContent = d.sha256 ? (d.sha256.slice(0, 16) + '…') : '-';
   (q('updErrRow')||{}).style.display = d.error ? 'block' : 'none';
   (q('updErr')||{}).textContent = d.error || '';
+  // 更新内容（release notes）：有就展示，没有就整行隐藏（旧清单/拉取失败都属正常）。
+  const notes = (d.notes || '').trim();
+  (q('updNotesRow')||{}).style.display = notes ? 'block' : 'none';
+  (q('updNotes')||{}).textContent = notes;
   const canApply = !!(d.available && d.can_apply);
   (q('updApply') || {}).style.display = canApply ? 'inline-block' : 'none';
   if (!canApply) stopUpdatePoll();

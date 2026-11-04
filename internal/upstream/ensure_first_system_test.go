@@ -79,3 +79,19 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// 整包往返必须保精度：审计发现未用 UseNumber 时大整数会被 float64 改写。
+// 这条用例锁死 seed 原样透传（回退到 json.Unmarshal -> 变红）。
+func TestEnsureFirstSystemPreservesBigInt(t *testing.T) {
+	in := []byte(`{"messages":[{"role":"user","content":"hi"}],"seed":9223372036854775807}`)
+	out := ensureFirstSystem(in)
+	if !json.Valid(out) {
+		t.Fatalf("输出不是合法 JSON: %s", out)
+	}
+	if !contains(string(out), "9223372036854775807") {
+		t.Fatalf("大整数被改写（应为原文透传）: %s", out)
+	}
+	if contains(string(out), "9223372036854776000") {
+		t.Fatalf("大整数被 float64 精度吞掉: %s", out)
+	}
+}
