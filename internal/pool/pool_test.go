@@ -1919,14 +1919,14 @@ func TestUpdateResourceAndNoteUsage(t *testing.T) {
 	if st.TotalTokens != 300 {
 		t.Errorf("TotalTokens=%d want 300", st.TotalTokens)
 	}
-	// math.Ceil(0.5) = 1, 2000 - 1 = 1999
-	if st.Credits != 1999 {
-		t.Errorf("Credits after deduction=%d want 1999", st.Credits)
+	// 0.5 分不足 1 分，按小数累计不扣整分（旧实现 ceil 会扣 1，导致本地余额虚低）。
+	if st.Credits != 2000 {
+		t.Errorf("Credits after deduction=%d want 2000（0.5 分累计中，未满 1 不扣）", st.Credits)
 	}
 
 	rem, used := p.AccountCredits("u1")
-	if rem != 1999 || used != 0.5 {
-		t.Errorf("AccountCredits got rem=%d, used=%v, want 1999, 0.5", rem, used)
+	if rem != 2000 || used != 0.5 {
+		t.Errorf("AccountCredits got rem=%d, used=%v, want 2000, 0.5", rem, used)
 	}
 	remZero, usedZero := p.AccountCredits("non-exist")
 	if remZero != 0 || usedZero != 0 {
@@ -1939,7 +1939,8 @@ func TestUpdateResourceAndNoteUsage(t *testing.T) {
 	p2.load()
 	p2.Add(&auth.Auth{UID: "u1"})
 	st2, _ := p2.Status("u1")
-	if st2.Credits != 1999 || st2.CreditsUsed != 0.5 || st2.TotalTokens != 300 {
+	// 0.5 分仍在小数累计里（未满 1），持久化后余额保持 2000。
+	if st2.Credits != 2000 || st2.CreditsUsed != 0.5 || st2.TotalTokens != 300 {
 		t.Errorf("Reloaded state: credits=%d used=%v tokens=%d", st2.Credits, st2.CreditsUsed, st2.TotalTokens)
 	}
 }

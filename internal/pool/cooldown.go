@@ -15,6 +15,7 @@ func (p *Pool) SetCredits(uid string, credits int64, total ...int64) {
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.credits = credits
+		e.creditFrac = 0
 		if len(total) > 0 {
 			e.creditsTotal = total[0]
 		}

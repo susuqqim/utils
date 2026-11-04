@@ -169,6 +169,7 @@ type RateLimitedModel struct {
 type entry struct {
 	a                 *auth.Auth
 	credits           int64
+	creditFrac        float64       // 本地小数累计消耗：两次 ResourceDetail 之间按请求积分做即时扣减，满 1 才动 credits
 	creditsTotal      int64         // 积分总额度（UserResource 聚合；0 = 未知）
 	creditsExpiring   int64         // 快到期积分量
 	creditsUsed       float64       // 累计消耗官方积分

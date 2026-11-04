@@ -124,6 +124,48 @@ var autoActions = []autoAction{
 		Desc:     "真实对话 + skill_info 技能加载事件（已验证：人杰2 点亮）",
 		run:      runSkillFresh,
 	},
+	// 2026-11 新一批「体验某个专家」任务：jump_url 直接给 expertId，复用同一条召唤+使用链。
+	// 未点亮验证前标 Attempt（面板会显示为“尝试型”）。
+	{
+		TaskCode: "WorkBuddy_Valorant",
+		Desc:     "真实召唤「无畏契约拼豆专家」并对话一次（expertId 由市场全量检索定位）",
+		Attempt:  true,
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runExpertByID(p, a, "ex_xQHHD1u5Jkua", "无畏契约拼豆专家", "无畏契约拼豆专家")
+		},
+	},
+	{
+		TaskCode: "expert_use_maidehao",
+		Desc:     "真实召唤「中国电商运营专家」并对话一次（expertId 取自任务跳转）",
+		Attempt:  true,
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runExpertByID(p, a, "ex_GDl31WahyIH0", "中国电商运营专家", "中国电商运营专家")
+		},
+	},
+	{
+		TaskCode: "expert_use_douyinyin",
+		Desc:     "真实召唤「抖音策略师」并对话一次（expertId 取自任务跳转）",
+		Attempt:  true,
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runExpertByID(p, a, "ex_FbY5nlWTqDod", "抖音策略师", "抖音策略师")
+		},
+	},
+	{
+		TaskCode: "expert_use_shangjia_xuanchuan",
+		Desc:     "真实召唤「商家宣传页与海报设计师」并对话一次（expertId 取自任务跳转）",
+		Attempt:  true,
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runExpertByID(p, a, "ex_Weo3x2EZuSDm", "商家宣传页与海报设计师", "商家宣传页与海报设计师")
+		},
+	},
+	{
+		TaskCode: "expert_use_bowangwang",
+		Desc:     "真实召唤「直播电商教练」并对话一次（expertId 取自任务跳转）",
+		Attempt:  true,
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runExpertByID(p, a, "ex_WZY136wV5aMt", "直播电商教练", "直播电商教练")
+		},
+	},
 	{
 		TaskCode: "Expert_lighthouse",
 		Desc:     "真实轻量云专家召唤+使用链（chat 链带 has_expert，已验证：两账号点亮）",
@@ -657,6 +699,17 @@ func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "skipped": true, "message": "该任务已领取过奖励"})
 		return
 	}
+	// 先接受再执行：2026-11 新一批任务（expert_use_* 等）要求 accept_status=accepted
+	// 之后行为事件才计分；漏这一步会“上报成功但进度不归账”，表现为静默失败。
+	// 接受失败不阻塞——老任务的行为事件本身就是唯一判据。
+	if before.AcceptStatus != "accepted" && before.AcceptStatus != "completed" && before.AcceptStatus != "claimed" {
+		if isMP {
+			_ = p.cfg.Upstream.AcceptTasksMP(a, []string{act.TaskCode})
+		} else {
+			_ = p.cfg.Upstream.AcceptTasks(a, []string{act.TaskCode})
+		}
+		time.Sleep(reportGap)
+	}
 	msg, err := act.run(p, a)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "执行失败: "+err.Error())
@@ -980,6 +1033,37 @@ func runExpertLighthouse(p *Panel, a *auth.Auth) (string, error) {
 		return "", fmt.Errorf("使用事件: %w", err)
 	}
 	return "已上报轻量云专家召唤+使用链（真实对话 requestId）", nil
+}
+
+// runExpertByID 完成「指定专家」类任务：召唤链 + 真实对话 + 使用事件。
+//
+// 与 runExpertLighthouse 同形，差别只在专家 ID 由任务侧给出：2026-11 新一批
+// expert_use_* 任务的 jump_url 里直接带 expertId（如 ex_GDl31WahyIH0）。
+// 上游判据要求 expertId 是平台上真实存在的专家（编造不计分），所以这里只用任务给的 ID，
+// 市场列表能命中就顺带用服务端元数据（版本/分类/职称），命中不了就用任务标题兜底。
+func runExpertByID(p *Panel, a *auth.Auth, expertID, name, profession string) (string, error) {
+	e := upstream.MarketExpert{ExpertID: expertID, ExpertType: "agent", DisplayNameZH: name, ProfessionZH: profession}
+	if experts, err := p.cfg.Upstream.MarketExpertList(a, "agent"); err == nil {
+		for _, x := range experts {
+			if x.ExpertID == expertID {
+				e = x
+				break
+			}
+		}
+	}
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSummonSequence(e)...); err != nil {
+		return "", fmt.Errorf("召唤链: %w", err)
+	}
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, expertID)
+	if err != nil {
+		return "", fmt.Errorf("真实对话: %w", err)
+	}
+	events := append(upstream.DesktopChatSequence(conv, req, "msg-"+req[len(req)-8:], "fast-model", "fast-model"),
+		upstream.DesktopExpertActualUseEvent(e, conv, req))
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
+		return "", fmt.Errorf("使用事件: %w", err)
+	}
+	return "已上报「" + name + "」的召唤+使用链", nil
 }
 
 // runAppearance 完成 Hp_Appearance（换主题）。

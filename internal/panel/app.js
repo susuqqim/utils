@@ -2427,15 +2427,17 @@ function updShow(d) {
     b.hidden = true; b.onclick = null;
   }
 }
-async function checkUpdatePanel(force) {
+// silent=true：后台静默检查 —— 只在右上角更新徽标上体现，不弹窗、不显示"正在检查…"。
+// 用户点「检查更新」时仍走完整弹窗流程。
+async function checkUpdatePanel(force, silent) {
   const btn = $('btnCheckUpdate');
   if (btn) { btn.disabled = true; btn.title = '正在检查…'; }
-  openUpdateDialog(null);   // 先弹出"正在检查…"（按钮与徽标统一体验）
+  if (!silent) openUpdateDialog(null);   // 先弹出"正在检查…"（仅在非静默时）
   try {
     const d = await api('update/check' + (force ? '?force=1' : ''));
     window.__lastUpdate = d;
     updShow(d);
-    openUpdateDialog(d);
+    if (!silent) openUpdateDialog(d);
     if (btn) btn.title = '已检查：当前 ' + (d.current || '?') + '，最新 ' + (d.latest || '?');
     return d;
   } catch (e) {
@@ -2446,11 +2448,10 @@ async function checkUpdatePanel(force) {
 (function () {
   const b = $('btnCheckUpdate');
   if (b) b.onclick = function () { checkUpdatePanel(true); };
-// 只在"确实有新版"时自动弹框（QA：每次开面板都弹太烦）；失败只更新按钮提示。
+// 开机静默检查：只点亮右上角徽标，不弹窗（用户反馈「每次打开网页都跳更新框」）。
+// 想看详情点徽标或左下角「检查更新」即可。
 setTimeout(function () {
-  checkUpdatePanel(false).then(function (d) {
-    if (d && d.available) openUpdateDialog(d);
-  });
+  checkUpdatePanel(false, true);
 }, 1200);
 })();
 

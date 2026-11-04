@@ -289,3 +289,20 @@ func TestIndexHTMLNoInlineEventHandlers(t *testing.T) {
 		t.Errorf("index.html 出现行内事件处理器（严格 CSP 下会被拦掉、且刷 violation）：%v", m)
 	}
 }
+
+// 开机更新检查必须静默：只点亮右上角徽标，不弹窗。
+// 用户反馈「每次打开网页都跳更新框」——这条锁住启动路径不再自动 openUpdateDialog。
+func TestStartupUpdateCheckIsSilent(t *testing.T) {
+	b, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if !strings.Contains(src, "checkUpdatePanel(false, true)") {
+		t.Error("启动检查应带 silent=true：checkUpdatePanel(false, true)")
+	}
+	// 旧行为：启动后发现有新版就自动弹窗（必须已删除）。
+	if strings.Contains(src, "if (d && d.available) openUpdateDialog(d);") {
+		t.Error("启动路径不应再自动弹窗（应只更新徽标）")
+	}
+}

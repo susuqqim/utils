@@ -196,6 +196,7 @@ func (p *Pool) UpdateResourceDetail(uid string, remain int64, earliestExpire tim
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.credits = remain
+		e.creditFrac = 0 // 绝对值已覆盖，丢弃本地小数累计
 		if !earliestExpire.IsZero() {
 			e.earliestExpire = earliestExpire
 		}
@@ -303,7 +304,12 @@ func (p *Pool) NoteUsageForModel(uid string, credit float64, tokens int, model s
 		if credit > 0 {
 			e.creditsUsed += credit
 			e.dailyCreditsUsed += credit
-			deduct := int64(math.Ceil(credit))
+			// 小数累计扣减：单请求实测常只有 0.02~0.09 分，按 ceil 会「每条至少扣 1 分」，
+			// 本地余额几分钟就见底，5 分钟刷新再把它拉回真实值 —— 面板表现就是忽降忽升。
+			// 改成攒够 1 分才扣，余数留到下次；刷新写回绝对值时清零余数。
+			e.creditFrac += credit
+			deduct := int64(e.creditFrac)
+			e.creditFrac -= float64(deduct)
 			if e.credits > deduct {
 				e.credits -= deduct
 			} else {
