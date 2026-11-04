@@ -1,15 +1,16 @@
 {
   "version": "1.11.29",
-  "sha256": "7acbbb9fb159bcd401376ba63cb054da9583708a3bfb5add4f630e6ff6561f3f",
-  "size": 11942912,
+  "sha256": "1ccb5b7dc7d8979e47bf4b2caef0ca31a61d2585964f6e6fed19d1dc1d621deb",
+  "size": 11948032,
   "urls": [
     "https://github.com/susuqqim/utils/releases/download/v1.11.29/wb2api-core.exe"
   ],
-  "generated": "2026-11-04T14:21:45",
+  "generated": "2026-11-04T15:39:26",
+  "notes": "# WorkBuddy2API 更新说明（1.11.29 重建版）\n\n本版二进制内报版本：**1.11.29-panel**（2026-11-04 重建，构建戳 a52dc55，工作区干净）。\n\n## 一、上游 11128 结构性校验\n\n上游新增判定：首条消息必须是 `system`，否则 `400 {code:11128, msg:\"first message is not system prompt\"}`。\n本版把「首条 system 兜底」从只对 global 扩到 **CN + global 统一**：\n\n| 形态 | 处理 |\n|---|---|\n| 首条已是 system | 原样返回，零改写（不碰前缀缓存） |\n| 后面存在 system | 前移该条，内容一字不动 |\n| 完全没有 system | 最前补中性 fallback |\n\n同时改用 `json.Decoder.UseNumber()`，避免整包往返把 `seed` 等大整数按 float64 改写。\n\n## 二、面板：更新弹窗显示更新内容\n\n以前只显示版本号，看不到改了什么。现在：\n\n- 优先读 `latest.json` 的 `notes` 字段（零额外请求）；\n- 缺省时回退拉同 Release 的 `RELEASE-NOTES.md`；\n- 3 秒超时、64KB 上限，读取失败只隐藏区块，不影响检查结果；\n- 弹窗内可滚动展示，无内容时整块隐藏。\n\n## 三、随版修复与清理\n\n- 公有仓 `sanitize.go` 补齐 DSH 身份句接线（`dshPromptRewrites` / `dshPromptProbes`）；\n- 删除公有仓残留 `internal/panel/update_race_test.go`（曾使 `go test ./internal/panel` 编译失败）；\n- 删除公有仓 10.4MB `scripts/legacy_backup/signin_bin`；\n- 标签 `v1.11.29` 指向修正为含接线的提交。\n\n## 四、验证\n\n- `go vet ./...` / `go test ./... -count=1` 全绿；`TZ=UTC` 闸门全绿；\n- 更新内容：8 条用例（URL 推导、404/超大截断、清单优先、资产回退、已最新不请求、JSON 字段、端到端）；\n- 首条 system：6 种消息形态 + 大整数保真；\n- 独立对抗审计两轮：资产 sha256 与本地逐字节相等，MSI 内 exe 与发布 exe 相等。\n\n## 五、升级\n\n面板「立即更新」，或 `msiexec /i workbuddy2api-1.11.29-x64.msi /passive`。\n单文件替换：先 `wb2api stop`，替换后 `wb2api start`。升级后 `/panel/api/overview` 的 version 应为 `1.11.29-panel`。\n\n## 六、注意\n\n本次是同一版本号的重建：二进制 hash 与首版 1.11.29 不同。**已在旧 1.11.29 上的用户不会收到自动提示**\n（版本号相同），需要手动重装；从 1.11.28 升级的正常流程不受影响。\n",
   "msi": {
     "name": "workbuddy2api-1.11.29-x64.msi",
     "url": "https://github.com/susuqqim/utils/releases/download/v1.11.29/workbuddy2api-1.11.29-x64.msi",
-    "sha256": "a422d14f61f02dc3adaf9ada97865fa46bd495fc1d132486c0bf56530c4828ca",
-    "size": 4247552
+    "sha256": "8043af5e2fbfd05ed99360823158ab8325bb3c1f37ff1e3eaf6b673d97111b74",
+    "size": 4243456
   }
 }
