@@ -712,7 +712,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//   - sawBadParams：任一次命中即判 400 —— "参数/上下文被拒"是请求自身的属性。注意
 	//     **请求体解析失败（11101）在循环内即刻 400 终止**，不走这里；走到这里的只有
 	//     模型相关的参数类（11133 等），它们可能换号成功，故仍需终态聚合。
-	var sawBadParams, sawModelBlocked bool
+	var sawBadParams, sawModelBlocked, sawOverload bool
 	// modelBlock 记录本次是否因「模型级冷却」而选不到号（下方 acct==nil 分支填充）。
 	// 默认零值 Blocked=false = 按既有的"没有可用账号"口径报错。
 	var modelBlock pool.ModelBlockStatus
@@ -866,6 +866,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
 	convID := resolveCacheConvID(body, r.Header, sessKey)
 	chatMeta := upstream.ChatMeta{ConversationID: convID}
+	// 记录实际出站模型/档位（诊断）：ModelEff 由 bareModel 决定，档位需上游准备后回填。
+	var effortOut, modelOut string
+	chatMeta.OutEffort = &effortOut
+	chatMeta.OutModel = &modelOut
 	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {
 		chatMeta.ConversationRequestID = v
 	} else if sessKey != "" {
@@ -956,6 +960,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		attemptStarted := time.Now()
 		rc, status, respBody, challenge, terr := h.cfg.Upstream.ChatStreamContextEx(r.Context(), acct, body, clientIP, chatMeta)
+		// 只有**真的打到上游**才记录"实际出站"：池空/全冷却时请求根本没发出去，
+		// 记上模型名会把"这个模型到底发出去没有"的排查带偏（审计 B1）。
+		if terr == nil && status > 0 {
+			if m := reqMetaOf(r.Context()); m != nil {
+				if modelOut != "" {
+					m.ModelEff = modelOut
+				} else {
+					m.ModelEff = bareModel
+				}
+				m.EffortEff = effortOut
+			}
+		}
 		if terr != nil {
 			if errors.Is(terr, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
 				// 客户端主动取消（如在收到头之前点击"停止"）：不罚号、不轮转、立即退出；
@@ -1083,6 +1099,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if kind == upstream.ErrModelBlocked {
 				sawModelBlocked = true
 			}
+			if upstream.IsProviderOverload(string(respBody)) {
+				// 供应商过载（11134）：不轮转、不罚号。换号打的是同一个过载供应商，
+				// 只会多烧上下文与积分并丢掉会话粘性；给可重试的 503 让客户端退避。
+				sawOverload = true
+				st.status = http.StatusServiceUnavailable
+				break
+			}
 			if kind == upstream.ErrBadParams {
 				// 模型/后端相关的参数拒绝（11133 等）：轮转可能命中能接的账号，
 				// 末端按 sawBadParams 归 400（恢复 fast-fail 之前的终态语义）。
@@ -1152,7 +1175,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 粘性也不会绑到这个号 —— 此前这些动作在读第一帧之前就做，于是一个正在
 				// 限流的号被当成健康号、粘性还会把会话钉死在它身上，后续每轮都失败。
 				kind := upstream.FrameKind(errFrame)
-				h.applyErrorPolicy(acct.UID, kind, errFrame, bareModel)
+				// 11134（供应商过载）不罚号、不冷却、不写负缓存：
+				// 帧里的文案常带 "rate limiting"，会被归成软限流而挂 600s 冷却（审计 R3-7）。
+				if upstream.IsProviderOverload(errFrame) {
+					log.Printf("WARN: [server] stream uid=%s model=%s: 11134 供应商过载（不罚号、不冷却）payload=%s",
+						logfmt.UID8(acct.UID), bareModel, logfmt.Truncate(errFrame, 200))
+				} else {
+					h.applyErrorPolicy(acct.UID, kind, errFrame, bareModel)
+				}
 				st.status = http.StatusServiceUnavailable
 				log.Printf("WARN: [server] stream uid=%s model=%s: upstream error frame kind=%s payload=%s",
 					logfmt.UID8(acct.UID), bareModel, kind, logfmt.Truncate(errFrame, 200))
@@ -1347,7 +1377,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if modelBlock.AllNotFound {
 			// 确定性"本后端没有这个模型"：等没用，换模型才有用。
 			writeOpenAIError(w, http.StatusBadRequest, "model_unavailable",
-				"model is unavailable on every account (per-model negative cache, 11102), try another model; 可用模型清单见 /v1/models ("+local+")")
+				"model is unavailable on every account (per-model negative cache), try another model; 可用模型清单见 /v1/models ("+local+")")
 			st.status = http.StatusBadRequest
 			return
 		}
@@ -1358,6 +1388,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case sawOverload:
+		// 11134 供应商过载：可重试，但要明确"不是你的号坏了"。
+		msg := "upstream model provider is overloaded (11134); retry later — switching accounts hits the same provider"
+		if lastErr != nil {
+			msg += ": " + lastErr.Error()
+		}
+		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+		st.status = http.StatusServiceUnavailable
 	case sawBadParams:
 		msg := "request body was rejected by upstream as invalid"
 		if lastErr != nil {
@@ -1706,6 +1744,12 @@ func (h *Handler) noteUpstreamSuccess(uid, stickyKey string) {
 func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, model string) {
 	switch kind {
 	case upstream.ErrModelBlocked:
+		// 11134 是供应商过载：不得写 (账号,模型) 负缓存。
+		// 否则 SSE error 帧形态下第二次同模型请求会被本地判成
+		// model_unavailable(400) 不可重试，与 HTTP 路径的"可重试"语义相反。
+		if upstream.IsProviderOverload(body) {
+			return
+		}
 		// 只跳过**路由/容量类**文案（"no available channel" 这类可能自愈的；审查 D 的 P2-9），
 		// 其余一律落负缓存 —— 222 注意**不能**反过来只认 body 里含 "11102"：ErrModelBlocked
 		// 还有 404+文案、4xx+文案族两条生产者，排除它们会让账号不被 modelCooled ⇒ 每次请求

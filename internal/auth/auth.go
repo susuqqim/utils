@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,19 @@ import (
 
 // Auth 是归一化后的账号凭证（来源可以是插件 OAuth 嵌套形或手写扁平形）。
 type Auth struct {
+	// sealed / rawDoc 记录「读入时是桌面端加密文件」的现场：
+	// sealed = 被信封包裹的字段路径（回写时按同一批字段复原），
+	// rawDoc = 解密后的文档树（回写时以它为底，保住桌面端写入的 uin 等字段）。
+	sealed      map[string]bool
+	rawDoc      map[string]any
+	expiresAtMS bool // 读入时 expiresAt 是否毫秒（桌面端形态）
+	// keepRaw 记录"解不开的非凭据信封"原值：回写时原样放回，绝不用空值覆盖。
+	keepRaw map[string]any
+	// sealedVals 记录从信封解出的明文字面量：回写时一个都不许出现（值级校验）。
+	sealedVals map[string]bool
+	// inputVals 是**原文件**里的字符串叶子：本来就在明文里的值不算泄漏（差集口径）。
+	inputVals map[string]bool
+
 	// mu 串行化 RefreshToken 写与 SaveAtomic 读，防止并发写回半更新 token。
 	mu sync.Mutex
 
@@ -199,6 +213,42 @@ func Parse(raw []byte) (*Auth, error) {
 		return nil, fmt.Errorf("empty auth storage")
 	}
 	raw = bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))
+	// 新版桌面端的 auth 文件用 $wbEncrypted 信封加密若干字段：先解出明文再走原解析。
+	origLeaves := jsonStringLeaves(raw)
+	plain, sealed, doc, meta, derr := decryptWBEncrypted(raw)
+	if derr != nil {
+		return nil, fmt.Errorf("storage_decrypt_error: %w", derr)
+	}
+	raw = plain
+	var keepRaw map[string]any
+	var sealedVals map[string]bool
+	var rawDocForSave map[string]any
+	if doc == nil {
+		// 明文文件也要做一次类型收敛：桌面端/第三方工具可能把 uid 写成数字，
+		// 而本仓结构是强类型（string），不收敛会直接解析失败。
+		var m map[string]any
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if dec.Decode(&m) == nil && m != nil {
+			rawDocForSave = cloneDoc(m).(map[string]any)
+			normalizeDoc(m)
+			if b, err := json.Marshal(m); err == nil {
+				raw = b
+			}
+		}
+	}
+	if doc != nil {
+		if meta != nil {
+			keepRaw, sealedVals = meta.KeepRaw, meta.SealedVals
+		}
+		canonicalizeKeys(doc, sealed)
+		// 保存用的文档保持**原类型**（不写回规范化后的形态），否则等于擅自改写桌面端文件。
+		rawDocForSave = cloneDoc(doc).(map[string]any)
+		normalizeDoc(doc)
+		if normalized, merr := json.Marshal(doc); merr == nil {
+			raw = normalized
+		}
+	}
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -266,10 +316,16 @@ func Parse(raw []byte) (*Auth, error) {
 	if strings.TrimSpace(a.AccessToken) == "" {
 		return nil, fmt.Errorf("parse_error: missing accessToken")
 	}
+	// 桌面端 expiresAt 是毫秒；本仓内部一律 Unix 秒（否则有效期会算到几万年后）。
+	if a.ExpiresAt > 1e12 {
+		a.ExpiresAt /= 1000
+		a.expiresAtMS = true // 记住原单位：回写要还原成毫秒，否则桌面端读成 1970 年过期
+	}
+	a.sealed, a.rawDoc, a.keepRaw, a.sealedVals, a.inputVals = sealed, rawDocForSave, keepRaw, sealedVals, origLeaves
 	return &a, nil
 }
 
-// SaveAtomic 以嵌套形原子写回 FilePath（tmp + rename），保持嵌套形（插件可读）格式。
+// SaveAtomic 原子写回 FilePath（tmp + rename），保持读入时的形态（扁平仍扁平、嵌套仍嵌套）。
 // 全程持 a.mu：防止与 RefreshToken 修改 token 字段并发，杜绝写回半更新。
 // 防御：accessToken 为空时拒绝写回，避免误用空凭证覆盖有效文件。
 func (a *Auth) SaveAtomic() error {
@@ -281,28 +337,90 @@ func (a *Auth) SaveAtomic() error {
 	if a.FilePath == "" {
 		return fmt.Errorf("no FilePath set")
 	}
-	doc := map[string]any{
-		"auth": map[string]any{
-			"accessToken":  a.AccessToken,
-			"refreshToken": a.RefreshToken,
-			"expiresAt":    a.ExpiresAt,
-			"domain":       a.Domain,
-			"realm":        a.realm,
-		},
-		"account": map[string]any{
-			"uid":          a.UID,
-			"enterpriseId": a.EnterpriseID,
-			"nickname":     a.Nickname,
-		},
+	// 加密文件：以读入时的文档为底，保住桌面端自己写的字段（uin/phoneNumber 等），
+	// 只覆盖本仓负责的字段，最后按同一批路径重新封成信封。
+	doc := map[string]any{}
+	if a.rawDoc != nil {
+		doc = cloneDoc(a.rawDoc).(map[string]any)
 	}
+	expiresOut := a.ExpiresAt
+	if a.expiresAtMS {
+		expiresOut *= 1000
+	}
+	// 形态保持：扁平形态（顶层直接放 accessToken）的文件必须继续按扁平写回，
+	// 否则会在旁边新建一个明文 auth 段（审计 R2-1 的 fail-open）。
+	flat := a.rawDoc != nil && a.rawDoc["accessToken"] != nil && a.rawDoc["auth"] == nil
+	if flat {
+		setKeyCI(doc, "accessToken", a.AccessToken)
+		setKeyCI(doc, "refreshToken", a.RefreshToken)
+		setKeyCI(doc, "expiresAt", expiresOut)
+		setKeyCI(doc, "domain", a.Domain)
+		setKeyCI(doc, "realm", a.realm)
+		if a.UID != "" {
+			setKeyCI(doc, "uid", wbRestoreJSONType(doc["uid"], a.UID))
+		}
+	} else {
+		// auth 段按 key 合并（不整体替换）：桌面端写的 userId/tokenType 等未知键必须留住。
+		authDoc, _ := doc["auth"].(map[string]any)
+		if authDoc == nil {
+			authDoc = map[string]any{}
+		}
+		setKeyCI(authDoc, "accessToken", a.AccessToken)
+		setKeyCI(authDoc, "refreshToken", a.RefreshToken)
+		setKeyCI(authDoc, "expiresAt", expiresOut)
+		setKeyCI(authDoc, "domain", a.Domain)
+		setKeyCI(authDoc, "realm", a.realm)
+		doc["auth"] = authDoc
+	}
+	acct, _ := doc["account"].(map[string]any)
+	if acct == nil {
+		acct = map[string]any{}
+	}
+	setKeyCI(acct, "uid", wbRestoreJSONType(acct["uid"], a.UID))
+	setKeyCI(acct, "enterpriseId", wbRestoreJSONType(acct["enterpriseId"], a.EnterpriseID))
+	setKeyCI(acct, "nickname", wbRestoreJSONType(acct["nickname"], a.Nickname))
+	doc["account"] = acct
 	// DeviceToken 非空才写回顶层 device_token：避免在无该字段的旧文件里引入空键
 	// （保持与插件 OAuth 输出形状一致，插件读取忽略未知键）。
 	if a.DeviceToken != "" {
 		doc["device_token"] = a.DeviceToken
 	}
+	// 解不开的非凭据信封：原样放回（否则会被空值覆盖，原密文永久丢失）。
+	for path, env := range a.keepRaw {
+		parts := strings.Split(path, ".")
+		switch len(parts) {
+		case 1:
+			doc[parts[0]] = env
+		case 2:
+			if parent, ok := doc[parts[0]].(map[string]any); ok {
+				parent[parts[1]] = env
+			} else {
+				continue
+			}
+		default:
+			continue
+		}
+		if a.sealed == nil {
+			a.sealed = map[string]bool{}
+		}
+		a.sealed[path] = true
+	}
+	if err := sealDocFields(doc, a.sealed); err != nil {
+		return err
+	}
 	raw, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
+	}
+	// 正向校验（与信封形态无关）：加密文件回写后，序列化结果里绝不允许出现凭据明文。
+	// 这一道兜住"记录在案的路径没被封上"的所有形态（容器级、根级、未来新字段）。
+	outLeaves := jsonStringLeaves(raw)
+	for val := range a.sealedVals {
+		// 差集口径：出现在输出、且**原文件里本来没有**的密封值 = 泄漏。
+		// 用集合相等而不是子串匹配：JSON 会把 < > & 转义成 \u003c 等，子串比对会漏判。
+		if outLeaves[val] && !a.inputVals[val] {
+			return fmt.Errorf("save refused: 加密文件重封失败（凭据会以明文落盘，uid=%s）", a.UID)
+		}
 	}
 	tmp := a.FilePath + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
@@ -375,3 +493,49 @@ func LoadDir(dir string) ([]*Auth, error) {
 
 // IsEnterprise 报告该账号是否为企业号（移植自上游 panel/main:internal/auth/auth.go:210）。
 func (a *Auth) IsEnterprise() bool { return strings.TrimSpace(a.EnterpriseID) != "" }
+
+// cloneDoc 深拷贝文档树：SaveAtomic 只改副本，绝不就地改 a.rawDoc
+// （否则"第一次保存的副作用"会变成后续保存的输入，审计 A3）。
+func cloneDoc(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			out[k] = cloneDoc(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = cloneDoc(item)
+		}
+		return out
+	}
+	return v
+}
+
+// wbRestoreJSONType 保留原始 JSON 类型：桌面端把 uid 写成数字时，
+// 回写不能擅自改成字符串（那是改写别人的文件）。
+func wbRestoreJSONType(orig any, value string) any {
+	switch orig.(type) {
+	case json.Number, float64:
+		if value != "" {
+			if _, err := strconv.ParseInt(value, 10, 64); err == nil {
+				return json.Number(value)
+			}
+		}
+	}
+	return value
+}
+
+// setKeyCI 大小写不敏感地写入：桌面端可能写成 AccessToken / ACCESSTOKEN，
+// 固定写规范小写会留下两份键（其中一份还是明文），所以优先复用原键名。
+func setKeyCI(m map[string]any, canonical string, value any) {
+	for k := range m {
+		if strings.EqualFold(k, canonical) {
+			m[k] = value
+			return
+		}
+	}
+	m[canonical] = value
+}

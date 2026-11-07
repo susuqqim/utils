@@ -40,7 +40,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.32-panel"
+const appVersion = "1.11.33-panel"
 
 // restartHidden 为真时（托盘模式），重启子进程用 CREATE_NO_WINDOW 拉起，
 // 避免新控制台闪窗；仅 Windows 生效（见 restart_windows.go）。
@@ -271,7 +271,13 @@ func main() {
 	// 独立于 HeaderTimeout：Header 管"连上了等首字节"，这里管"连不上"。
 	// 2026-10-21 实测网络下 4/10 次 12s 都建连失败，此前硬编码 8s 会把
 	// 本可成功的请求提前判死（日志 `dial tcp <ip>:443: i/o timeout` → 503）。
+	// 11‑128 出站 body 取证（排障开关，默认关）：必须**无条件**接线，
+	// 放在下面 DialTimeout 的 if 里会让该配置静默不生效（审计 B-4）。
+	if strings.TrimSpace(cfg.Diagnostics.OutboundDumpDir) != "" {
+		up.SetOutboundDumpDir(cfg.Diagnostics.OutboundDumpDir)
+	}
 	if sec := cfg.Upstream.DialTimeoutSeconds; sec > 0 {
+
 		up.DialTimeout = time.Duration(sec) * time.Second
 	}
 	// 聊天 SSE 首字节前（响应头）上限：cfg 已 normalize（缺省回落 timeout_seconds）。

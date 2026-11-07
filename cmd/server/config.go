@@ -105,6 +105,8 @@ type Config struct {
 	} `json:"server"`
 	// ReqLog 请求指标采集（默认关闭；口径见 ReqLog 类型注释）。
 	ReqLog ReqLog `json:"reqlog"`
+	// Diagnostics 排障开关（默认全关，见 DiagnosticsConfig）。
+	Diagnostics DiagnosticsConfig `json:"diagnostics"`
 	// EnterpriseGate 企业号能力门控（S5 第 2 步，上游 7e3bc51）：开启后，企业版账号
 	// （auth 带非空 enterpriseId）跳过**个人成长体系**类任务（成长队列/任务中心/每日真实对话/
 	// 夜猫子）—— 企业号没有个人成长体系，网关此前会每天空发注定 400/10001 的请求。
@@ -897,4 +899,11 @@ func ParseServerReadTimeout(v string) (time.Duration, error) {
 		return 0, fmt.Errorf("server.read_timeout: 负时长 %q 无意义", v)
 	}
 	return d, nil
+}
+
+// DiagnosticsConfig 排障开关（默认全关）。
+type DiagnosticsConfig struct {
+	// OutboundDumpDir 非空时，把被判 11‑128（渠道校验失败）的出站 body 落盘，
+	// 用于比对"上游到底看到了什么"。body 含用户内容，只在排障时打开。
+	OutboundDumpDir string `json:"outbound_dump_dir,omitempty"`
 }

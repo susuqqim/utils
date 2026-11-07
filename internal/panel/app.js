@@ -2380,11 +2380,22 @@ async function loadReqLog() {
     const rows = d.rows || [];
     if (!d.enabled) { box.innerHTML = '<div class="hint">采集未启用（配置 <code>reqlog.enabled=true</code> 后重启）</div>'; return; }
     if (!rows.length) { box.innerHTML = '<div class="hint">暂无记录</div>'; return; }
-    let h = '<table><thead><tr><th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>耗时</th><th>模型</th><th>IP</th><th>UA</th></tr></thead><tbody>';
+    let h = '<table><thead><tr><th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>耗时</th><th>模型</th><th>实际出站</th><th>IP</th><th>UA</th></tr></thead><tbody>';
     for (const r of rows) {
+      // 「实际出站」= 剥掉 cn:/global: 前缀后的模型 + 降级后的思考档位。
+      // 与请求模型不同时高亮，避免"降级了但看不出来"。
+      const effShown = [r.model_eff, r.effort_eff ? '档位 ' + r.effort_eff : ''].filter(Boolean).join(' · ');
+      // 只有**真的不同**才高亮：模型名被剥前缀，或档位确实被降（ranks 比较）。
+      const EFF_RANK = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6 };
+      const rankOf = v => (v && EFF_RANK[String(v).toLowerCase()] !== undefined ? EFF_RANK[String(v).toLowerCase()] : -1);
+      const reqRank = rankOf(r.effort_req), effRank = rankOf(r.effort_eff);
+      const downgraded = reqRank >= 0 && effRank >= 0 && effRank < reqRank;
+      const effDiff = (r.model_eff && r.model_eff !== r.model) || downgraded;
       h += '<tr><td>' + esc(new Date(r.ts).toLocaleString()) + '</td><td>' + esc(r.method || '') +
            '</td><td>' + esc(r.path || '') + '</td><td>' + (r.status || 0) +
            '</td><td>' + (r.latency_ms || 0) + 'ms</td><td>' + esc(r.model || '') +
+           '</td><td' + (effDiff ? ' title="与请求不同：模型已剥 cn:/global: 前缀，或思考档位被上游能力表降级"' : '') + '>' +
+           (effDiff ? '<b>' + esc(effShown) + '</b>' : '<span class="hint">' + esc(effShown || '—') + '</span>') +
            '</td><td>' + esc(r.ip || '') + '</td><td class="hint">' + esc((r.ua || '').slice(0, 60)) + '</td></tr>';
     }
     box.innerHTML = h + '</tbody></table>';

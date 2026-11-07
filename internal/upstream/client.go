@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -21,9 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"workbuddy2api/internal/cstime"
-
 	"workbuddy2api/internal/auth"
+	"workbuddy2api/internal/cstime"
 	"workbuddy2api/internal/logfmt"
 )
 
@@ -725,6 +726,11 @@ type Client struct {
 	// IdleTimeout 聊天 SSE 流中空闲超时；<=0 表示禁用空闲监控。
 	IdleTimeout time.Duration
 
+	// outboundDumpDir 非空时，把被判「渠道校验失败」的出站 body 落盘取证。
+	// 默认空 = 关闭：body 含用户内容，只在排障时显式打开。
+	outboundDumpMu  sync.Mutex
+	outboundDumpDir string
+
 	// effortsMu/efforts 缓存各模型 supportedEfforts（FetchModels 刷新），供请求体 effort 降级。
 	// 键按 realm 分层（map[realm]map[model][]efforts）：CN 探测结果不得被 global 同模型名
 	// 请求复用（同名不同档位会错误降级，C-2）。global 侧暂无 efforts 探测 → 桶缺失即透传。
@@ -910,6 +916,92 @@ func (c *Client) chatBase(a *auth.Auth) string {
 
 // prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
 // 显式传 realm 使 effort 降级按域取桶：CN 探测信息不得作用到 global 请求（C-2）。
+// SetOutboundDumpDir 打开/关闭出站 body 取证（空 = 关闭）。
+// 目录会被自动创建；只保留最近 maxOutboundDumps 份，避免长期运行把盘写满。
+func (c *Client) SetOutboundDumpDir(dir string) {
+	c.outboundDumpMu.Lock()
+	c.outboundDumpDir = strings.TrimSpace(dir)
+	c.outboundDumpMu.Unlock()
+}
+
+const maxOutboundDumps = 50
+
+// dumpSeq 保证同一时钟粒度内的并发命中不会互相覆盖（审计 C4）。
+var dumpSeq atomic.Uint64
+
+// dumpOutbound 在 11‑128（渠道校验失败）时把实际出站 body 落盘。
+// 只写 body 本身：不写 header/token；失败只记日志，绝不影响请求。
+func (c *Client) dumpOutbound(uid string, prepared []byte) {
+	c.outboundDumpMu.Lock()
+	dir := c.outboundDumpDir
+	c.outboundDumpMu.Unlock()
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		dumpLogf("WARN: [upstream] 取证目录不可用 dir=%s err=%v", dir, err)
+		return
+	}
+	// 只留安全字符：uid 来自上游/配置文件，带路径分隔符就能把文件写到目录外。
+	safeUID := ""
+	for _, r := range uid {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '-' || r == '_' {
+			safeUID += string(r)
+		}
+		if len(safeUID) >= 8 {
+			break
+		}
+	}
+	if safeUID == "" {
+		safeUID = "unknown"
+	}
+	// 先打码再截断：截断边界落在 token 中间时，半截 token 同样是敏感信息。
+	payload := redactTokenLike(prepared)
+	const maxDumpBytes = 1 << 20
+	if len(payload) > maxDumpBytes {
+		payload = append(append([]byte{}, payload[:maxDumpBytes]...), []byte("\n/* truncated by gateway: >1MiB */")...)
+	}
+	seq := dumpSeq.Add(1)
+	name := filepath.Join(dir, fmt.Sprintf("11128-%019d-%s-%d.json", time.Now().UnixNano(), safeUID, seq))
+	if err := os.WriteFile(name, payload, 0o600); err != nil {
+		dumpLogf("WARN: [upstream] 取证落盘失败 path=%s err=%v", name, err)
+		return
+	}
+	pruneOutboundDumps(dir)
+	dumpLogf("WARN: [upstream] 11‑128 出站 body 已落盘 path=%s（仅供排障，已打码）", name)
+}
+
+// tokenLikeRe 匹配"凭据形态"的串（前缀 + 足够长载荷）：落盘前统一打码，
+// 避免取证目录本身变成凭据泄漏点。
+var tokenLikeRe = regexp.MustCompile("sk-wb2a-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}")
+
+// redactTokenLike 把凭据形态的串替换成占位。
+func redactTokenLike(b []byte) []byte {
+	return tokenLikeRe.ReplaceAll(b, []byte("sk-wb2a-***REDACTED***"))
+}
+
+// dumpLogEvery 节流 dump 日志：11128 风暴时每请求一条 WARN 会把真正线索冲掉。
+var dumpLogEvery atomic.Uint64
+
+func dumpLogf(format string, args ...any) {
+	if n := dumpLogEvery.Add(1); n%20 != 1 {
+		return
+	}
+	log.Printf(format, args...)
+}
+
+// pruneOutboundDumps 只保留最近 maxOutboundDumps 份取证文件。
+func pruneOutboundDumps(dir string) {
+	matches, _ := filepath.Glob(filepath.Join(dir, "11128-*.json"))
+	if len(matches) <= maxOutboundDumps {
+		return
+	}
+	sort.Strings(matches) // 文件名含纳秒时间戳，字典序 = 时间序
+	for _, f := range matches[:len(matches)-maxOutboundDumps] {
+		_ = os.Remove(f)
+	}
+}
+
 func (c *Client) prepareBody(body []byte, realm string) []byte {
 	return PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints.Load(), c.effortsSnapshot(realm))
 }
@@ -1192,6 +1284,28 @@ func (c *Client) ChatStreamContextEx(ctx context.Context, a *auth.Auth, body []b
 	// global 首次路径 404/405 时换 fallback 路径重试；ensureConsoleSystem 在 prepareBody 后统一套用
 	// 全局脚本：首条消息非 system 时前置兜底 system（防 console 域上游 code 11-128）。
 	prepared := c.prepareBody(body, a.Realm())
+	// 回填实际出站模型/档位（prepareBody 已剥前缀并按能力表降级 effort）：
+	// 诊断字段，解析失败不影响请求。
+	if meta.OutModel != nil || meta.OutEffort != nil {
+		var probe struct {
+			Model            string `json:"model"`
+			ReasoningEffort  string `json:"reasoning_effort"`
+			ReasoningEffortC string `json:"reasoningEffort"`
+		}
+		if json.Unmarshal(prepared, &probe) == nil {
+			if meta.OutModel != nil {
+				*meta.OutModel = probe.Model
+			}
+			if meta.OutEffort != nil {
+				// 客户端两种写法都合法：snake 优先，camelCase 兜底。
+				if probe.ReasoningEffort != "" {
+					*meta.OutEffort = probe.ReasoningEffort
+				} else {
+					*meta.OutEffort = probe.ReasoningEffortC
+				}
+			}
+		}
+	}
 	// 首条 system 兜底对**两个 realm** 都生效：上游 2026-11 起把"首条消息必须是 system"
 	// 纳入渠道校验（11128 first message is not system prompt），CN 不再豁免。
 	prepared = ensureFirstSystem(prepared)
@@ -1219,7 +1333,15 @@ func (c *Client) ChatStreamContextEx(ctx context.Context, a *auth.Auth, body []b
 			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
 			cancel()
-			kind := Classify(resp.StatusCode, string(raw))
+			chHdr := truncate(strings.TrimSpace(resp.Header.Get("Www-Authenticate")), 160)
+			kind := ClassifyResp(resp.StatusCode, string(raw), chHdr)
+			// 取证按**业务码**触发，而不是按分类结果：2026-10-28 起的
+			// {"code":11128,"msg":"first message is not system prompt"} 不含渠道校验文案，
+			// 分类会落到 ErrClient —— 只认 ErrChannelRefused 会正好漏掉最主要的排障场景。
+			// 内容审核变体（ErrContentBlocked）不落盘：那是审核，不是渠道问题。
+			if kind == ErrChannelRefused || (hasBusinessCode(string(raw), "11128") && kind != ErrContentBlocked) {
+				c.dumpOutbound(a.UID, prepared)
+			}
 			log.Printf("WARN: [upstream] chat_stream uid=%s: upstream %d %s body=%s",
 				logfmt.UID8(a.UID), resp.StatusCode, kind, truncate(string(raw), 200))
 			// global 首次路径 404/405 → 换 fallback 路径重试；其余状态码直接返回。
@@ -2562,6 +2684,69 @@ func (c *Client) DailyChatGlobal(a *auth.Auth) error {
 		return fmt.Errorf("HTTP %d: %s", status, string(respBody))
 	}
 	return nil
+}
+
+// IsProviderOverload 报告上游是否为「供应商侧过载」（11134）。
+//
+// 与 11102（该后端无此模型）语义不同：11134 是同一供应商暂时扛不住，
+// 换账号撞的是同一个供应商 —— 轮转只会多烧一份上下文与积分，还会丢会话粘性。
+func IsProviderOverload(body string) bool {
+	// 只认**信封顶层**的 code（以及 error.code 这一层）：hasBusinessCode 会全树遍历，
+	// 于是 {"code":11102,"extra":{"code":11134}} 这种嵌套值会被误判成过载，
+	// 白白放弃轮转（11102 恰恰需要换号再试）。
+	var probe struct {
+		Code  json.RawMessage `json:"code"`
+		Error struct {
+			Code json.RawMessage `json:"code"`
+		} `json:"error"`
+		Data struct {
+			Code json.RawMessage `json:"code"`
+		} `json:"data"`
+	}
+	if json.Unmarshal([]byte(body), &probe) != nil {
+		return false
+	}
+	// 只认信封三层内的 code，且**外层优先**：
+	//   - {"code":11102,"extra":{"code":11134}} 这种深层嵌套必须是 false（11102 要换号再试）；
+	//   - {"code":11102,"data":{"code":11134}} 这种"外层说没这个模型、data 里提过载"也必须是 false。
+	// 只有外层没有 code 时，data.code 才作为兜底形态参与判定。
+	if wbCodeIs11134(probe.Code) || wbCodeIs11134(probe.Error.Code) {
+		return true
+	}
+	// 0/200 是"外层成功"的外壳，不代表业务结论：此时继续看 data.code。
+	conclusive := func(raw json.RawMessage) bool {
+		t := wbCodeText(raw)
+		return t != "" && t != "0" && t != "200"
+	}
+	if conclusive(probe.Code) || conclusive(probe.Error.Code) {
+		return false // 外层有明确码但不是 11134：以它为准
+	}
+	return wbCodeIs11134(probe.Data.Code)
+}
+
+// wbCodeIs 比较 JSON 里的业务码（可能是数字或字符串形态）。
+func wbCodeIs(raw json.RawMessage, want string) bool { return wbCodeText(raw) == want }
+
+// wbCodeIs11134 比较业务码是否等于 11134，容忍数字/字符串/带空白/带小数点的写法。
+func wbCodeIs11134(raw json.RawMessage) bool {
+	txt := wbCodeText(raw)
+	if txt == "" {
+		return false
+	}
+	if f, err := strconv.ParseFloat(txt, 64); err == nil {
+		return f == 11134
+	}
+	return txt == "11134"
+}
+
+// wbCodeText 取业务码的文本形态（数字/字符串都归一）。
+func wbCodeText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	txt := strings.TrimSpace(string(raw))
+	txt = strings.Trim(txt, "\"")
+	return strings.TrimSpace(txt) // 字符串码里可能带空白：" 11134 "
 }
 
 // IsAuthRetryable 报告该错误是否值得"刷新 token 后重试一次"。

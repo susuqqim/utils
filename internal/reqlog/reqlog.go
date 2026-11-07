@@ -28,11 +28,18 @@ type Entry struct {
 	Status    int       `json:"status"`
 	LatencyMS int64     `json:"latency_ms,omitempty"`
 	Model     string    `json:"model,omitempty"`
-	UID       string    `json:"uid,omitempty"` // 前 8 位
-	IP        string    `json:"ip,omitempty"`  // 截断到网络段
-	UA        string    `json:"ua,omitempty"`  // 截断 120
-	Tokens    int       `json:"tokens,omitempty"`
-	Credit    float64   `json:"credit,omitempty"`
+	// ModelEff / EffortEff 是**实际出站**的模型与思考档位：
+	// 客户端可能用 cn:/global: 前缀，或被上游能力表把 reasoning_effort 降级，
+	// 面板只展示 Model 时这种差异是隐形的。
+	ModelEff  string `json:"model_eff,omitempty"`
+	EffortEff string `json:"effort_eff,omitempty"`
+	// EffortReq 是客户端请求的档位：面板靠它和 EffortEff 比较，判断是否真的降级。
+	EffortReq string  `json:"effort_req,omitempty"`
+	UID       string  `json:"uid,omitempty"` // 前 8 位
+	IP        string  `json:"ip,omitempty"`  // 截断到网络段
+	UA        string  `json:"ua,omitempty"`  // 截断 120
+	Tokens    int     `json:"tokens,omitempty"`
+	Credit    float64 `json:"credit,omitempty"`
 }
 
 // SanitizeIP 把 IP 截断到网络段：IPv4 保留前 3 段（/24）；IPv6 保留前 3 组（/48）。

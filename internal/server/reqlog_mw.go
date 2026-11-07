@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"workbuddy2api/internal/logfmt"
 	"workbuddy2api/internal/reqlog"
 )
 
@@ -56,7 +57,7 @@ func ReqLogMiddleware(next http.Handler, sink *ReqLogSink) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		var model string
+		var model, effortReq string
 		if strings.HasPrefix(r.URL.Path, "/v1/") && r.Body != nil {
 			// 只读少量字节找 "model"（超过 64KB 不读，避免影响大 body 请求）
 			orig := r.Body
@@ -68,14 +69,22 @@ func ReqLogMiddleware(next http.Handler, sink *ReqLogSink) http.Handler {
 					io.Closer
 				}{io.MultiReader(bytes.NewReader(b), orig), orig}
 				var probe struct {
-					Model string `json:"model"`
+					Model            string `json:"model"`
+					ReasoningEffort  string `json:"reasoning_effort"`
+					ReasoningEffortC string `json:"reasoningEffort"`
 				}
 				if json.Unmarshal(b, &probe) == nil {
 					model = probe.Model
+					if probe.ReasoningEffort != "" {
+						effortReq = probe.ReasoningEffort
+					} else {
+						effortReq = probe.ReasoningEffortC
+					}
 				}
 			}
 		}
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		r, meta := withReqMeta(r)
 		next.ServeHTTP(sw, r)
 		if !strings.HasPrefix(r.URL.Path, "/v1/") {
 			return // 面板/健康检查等：不入指标
@@ -86,7 +95,11 @@ func ReqLogMiddleware(next http.Handler, sink *ReqLogSink) http.Handler {
 			Path:      r.URL.Path,
 			Status:    sw.status,
 			LatencyMS: time.Since(start).Milliseconds(),
-			Model:     model,
+			// model 由客户端控制，必须截断：8MB 的 model 字段会灌进内存环/归档/面板序列化。
+			Model:     logfmt.Truncate(model, 200),
+			ModelEff:  logfmt.Truncate(meta.ModelEff, 200),
+			EffortEff: logfmt.Truncate(meta.EffortEff, 64),
+			EffortReq: logfmt.Truncate(effortReq, 64),
 			IP:        reqlog.SanitizeIP(clientIPOf(r)),
 			UA:        reqlog.SanitizeUA(r.UserAgent()),
 		}

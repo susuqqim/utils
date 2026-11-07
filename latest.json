@@ -1,16 +1,16 @@
 {
-  "version": "1.11.32",
-  "sha256": "516cc35833310049c81b2fd7d1ec54332295ee96a4860e3232a348d21a0c28b3",
-  "size": 11962368,
+  "version": "1.11.33",
+  "sha256": "cefdae84460bf243e1c0fcd764ff072e68a29facf3490c35991c4c1661e59375",
+  "size": 12037120,
   "urls": [
-    "https://github.com/susuqqim/utils/releases/download/v1.11.32/wb2api-core.exe"
+    "https://github.com/susuqqim/utils/releases/download/v1.11.33/wb2api-core.exe"
   ],
-  "generated": "2026-11-07T22:24:25",
-  "notes": "# WorkBuddy2API 更新说明（1.11.32）\n\n二进制内报版本：**1.11.32-panel**（构建戳 e6e57cd）。\n\n## 修复：签到报 `401 Authorization Required`（openresty 拦截页）\n\n现象：\n\n```text\n签到完成(upstream client (http 401): <html>…401 Authorization Required…openresty…apisix…)\n```\n\n实际账号健康（四个 CN 号仍显示「今天已签到」，国际版打卡正常）。\n\n原因：上游 APISIX 拒凭证时回 HTML 401，死因只在响应头：\n\n```text\nWWW-Authenticate: Bearer realm=\"copilot\", error=\"invalid_token\"\n```\n\n旧实现只按「状态码 + 正文」分类，401 一律当普通客户端错误，于是三件事同时发生：\n\n1. 真失效被当代理页 → 号留在池里，每次命中都回 401；\n2. 代理页没被冷却 → 同一请求反复撞同一节点；\n3. 整页 HTML 透传到面板提示。\n\n现在的处理：\n\n| 响应 | 判定 | 处置 |\n|---|---|---|\n| 401 + `invalid_token` | 凭证真失效 | 先刷新 token 一次，成功留池；刷新失败才停用 |\n| 401 + HTML 无挑战头 | 代理/边缘拦截页 | 30 秒软冷却，不停用、不喂熔断 |\n| 401 + `12153` | 会话失效 | 与之前一致 |\n\n签到失败提示改为红色「签到失败」，`checkin_message` 截断到 160 字。\n\n## 升级\n\n面板「立即更新」，或 `msiexec /i workbuddy2api-1.11.32-x64.msi /passive`。\n",
+  "generated": "2026-11-08T00:29:07",
+  "notes": "# WorkBuddy2API 更新说明（1.11.33）\n\n二进制内报版本：**1.11.33-panel**（构建戳 1eeaea5）。\n\n## 新增能力\n\n**请求记录区分「请求的模型/档位」与「实际出站的模型/档位」**\n\n请求指标页新增一列「实际出站」：显示剥掉 `cn:/global:` 前缀后的真实模型，以及被上游能力表降级后的思考档位。\n只有确实不同（模型被剥前缀 / 档位被降）时才高亮，不再制造“全员被降级”的错觉。\n\n**支持新版桌面端的 `$wbEncrypted` 加密凭据文件**\n\n把桌面端 auth 文件直接放进 `auths/` 即可读取（AES-256-GCM 信封，keyId 校验）。\n回写保持加密：扁平形态仍扁平、嵌套仍嵌套、`expiresAt` 保持毫秒、`auth` 段未知键（userId/tokenType）保留。\n任何“凭据会以明文落盘”的路径都拒绝写盘（fixture 覆盖容器级/根级/扁平/混合/大小写变体/短值/转义字符等形态）。\n\n**11‑128 出站 body 取证（排障开关，默认关）**\n\n`diagnostics.outbound_dump_dir` 设置目录后，命中 11128（含 2026‑10 的 `first message is not system prompt` 变体）时把出站 body 落盘：\ntoken 形态先打码再截断、单份上限 1MiB、保留最近 50 份、日志按 1/20 节流。\n\n**11134 供应商过载不再轮转**\n\n上游 11134（供应商过载）时不再换号（换号撞同一供应商，白烧上下文/积分、丢会话粘性），不罚号、不写模型负缓存，\n终态回可重试的 503；SSE error 帧形态同样处理。\n\n## 修复\n\n- 网关 401 三态区分（invalid_token 先刷新、代理页只软冷却、12153 才停用）；\n- 余额本地扣减改小数累计（旧 `ceil` 每条至少扣 1 分）；\n- 过期「更新失败」状态在启动对账时自动清理；\n- 任务中心与配置页的前后端映射补齐（5 个任务「一键完成」、7 个 `tier_*` 参数可保存）。\n\n## 说明\n\n本轮改动经过 5 轮独立对抗审计（每轮仓库零改动、探针在仓库外运行）：\n最终 P0=0 / P1=0，剩余 P2 均已记录在案（不影响凭据安全）。\n\n## 升级\n\n面板「立即更新」，或 `msiexec /i workbuddy2api-1.11.33-x64.msi /passive`。\n",
   "msi": {
-    "name": "workbuddy2api-1.11.32-x64.msi",
-    "url": "https://github.com/susuqqim/utils/releases/download/v1.11.32/workbuddy2api-1.11.32-x64.msi",
-    "sha256": "a5970b805deb56eca31935d73775dbf333d7c5ed6e0011de0ed8b73b9ca5355b",
-    "size": 4255744
+    "name": "workbuddy2api-1.11.33-x64.msi",
+    "url": "https://github.com/susuqqim/utils/releases/download/v1.11.33/workbuddy2api-1.11.33-x64.msi",
+    "sha256": "81074e4e66955ae769cf0496b3a1202f4c38f629c7d32f963f551042192e96bf",
+    "size": 4280320
   }
 }
