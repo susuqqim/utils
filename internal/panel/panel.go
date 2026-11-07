@@ -23,6 +23,7 @@ import (
 	"time"
 	"workbuddy2api/internal/cstime"
 	"workbuddy2api/internal/gosafe"
+	"workbuddy2api/internal/logfmt"
 	"workbuddy2api/internal/reqlog"
 
 	"workbuddy2api/internal/httpauth"
@@ -723,21 +724,32 @@ func (p *Panel) accountCheckin(w http.ResponseWriter, r *http.Request) {
 			checkinMsg = "国际版每日活跃打卡完成（获取每日 30~50 积分奖励）"
 		}
 	} else {
-		if err := p.cfg.Upstream.DailyCheckin(a); err != nil {
+		err := p.cfg.Upstream.DailyCheckin(a)
+		// 网关层 401（APISIX 拦截页）先刷新 token 再重试一次：这类拦截多为
+		// 令牌刚轮换/边缘抖动，刷新后即过；重试仍失败才记 fail。
+		if err != nil && upstream.IsAuthRetryable(err) {
+			if rerr := p.cfg.Upstream.RefreshToken(a); rerr == nil {
+				_ = a.SaveAtomic()
+				err = p.cfg.Upstream.DailyCheckin(a)
+			}
+		}
+		if err != nil {
 			if upstream.IsAlreadyCheckin(err) {
 				checkinMsg = "今天已签到" // 幂等成功，不当作失败
 				ckStatus = "already"
 			} else {
-				checkinMsg = err.Error() // 业务错误照常查余额
+				// 上游拦截页是整页 HTML：截断后回显，别把一页 nginx 文本塞进面板提示。
+				checkinMsg = logfmt.Truncate(err.Error(), 160)
 				ckStatus = "fail"
 			}
 		}
 	}
 	p.cfg.Pool.NoteCheckin(uid, ckStatus)
-	resp := map[string]any{"ok": true}
+	resp := map[string]any{"ok": ckStatus != "fail"}
 	if checkinMsg != "" {
 		resp["checkin_message"] = checkinMsg
 	}
+	resp["checkin_status"] = ckStatus
 	remain, total, err := p.cfg.Upstream.UserResource(a)
 	if err != nil {
 		resp["balance_error"] = err.Error()

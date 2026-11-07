@@ -955,7 +955,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			clientIP = upstream.ExtractClientIP(r)
 		}
 		attemptStarted := time.Now()
-		rc, status, respBody, terr := h.cfg.Upstream.ChatStreamContext(r.Context(), acct, body, clientIP, chatMeta)
+		rc, status, respBody, challenge, terr := h.cfg.Upstream.ChatStreamContextEx(r.Context(), acct, body, clientIP, chatMeta)
 		if terr != nil {
 			if errors.Is(terr, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
 				// 客户端主动取消（如在收到头之前点击"停止"）：不罚号、不轮转、立即退出；
@@ -991,7 +991,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if status >= 400 {
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, false, false, 0)
 			st.status = status
-			kind := upstream.Classify(status, string(respBody))
+			kind := upstream.ClassifyResp(status, string(respBody), challenge)
 			// 内容拦截误报（passthrough 模式首遇）：判定为 system 指纹误报，
 			// 触发降级到次日 00:00 CST，换 Degraded 中性提示词同请求内重试。
 			// 第二次仍被拦（用户内容本身触发审核）→ 回内容防火墙错误（见下分支）。
@@ -1744,6 +1744,21 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 			// 6004 但无重置时间：只挂审计台账供账号页展示，不改变选号行为。
 			h.cfg.Pool.RecordModelRateLimitAudit(uid, model, "6004 model rate limit (reset unknown)")
 		}
+	case upstream.ErrAuthInvalid:
+		// 401 + WWW-Authenticate: invalid_token —— 网关点名凭证失效。
+		// 先刷新一次再判死：hub #795 的教训是"首次 401 就停用"会把可自愈的号误杀。
+		if a := h.cfg.Pool.AuthByUID(uid); a != nil {
+			if err := h.cfg.Upstream.RefreshToken(a); err == nil {
+				_ = a.SaveAtomic()
+				log.Printf("[pool] 401 invalid_token uid=%s → refresh 成功，账号留在池内", logfmt.UID8(uid))
+				return
+			}
+		}
+		h.cfg.Pool.Disable(uid, "401 invalid_token (refresh failed)")
+	case upstream.ErrGatewayAuth:
+		// 401 + HTML 网关页但没挑战头：代理/边缘把请求挡在业务之前，与账号健康无关。
+		// 只做 30s 软冷却（别在同一请求里反复撞同一个边缘节点），不喂熔断、不停用。
+		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, 30*time.Second, "gateway 401 page")
 	case upstream.ErrSessionDead:
 		h.cfg.Pool.Disable(uid, "12153 session dead")
 	case upstream.ErrNotFound:

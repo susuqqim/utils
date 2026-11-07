@@ -35,6 +35,8 @@ const (
 	ErrHardCredit                    // 余额不足（402 或 body 关键词）→ 长冷却
 	ErrSoftRate                      // 429 软限流 → 短冷却
 	ErrSessionDead                   // 401 + 12153 offline session 失效 → 禁用
+	ErrAuthInvalid                   // 401 + WWW-Authenticate invalid_token（凭证真失效）→ 先刷新再重试
+	ErrGatewayAuth                   // 401 + HTML 网关页但无挑战头（代理/边缘抖动）→ 短冷却，不罚号
 	ErrNotFound                      // 404 上游偶发 → 短冷却，不累计错误计数（防雪崩）
 	ErrServer                        // 5xx 上游故障
 	ErrContentBlocked                // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
@@ -56,6 +58,10 @@ func (k ErrKind) String() string {
 		return "soft_rate"
 	case ErrSessionDead:
 		return "session_dead"
+	case ErrAuthInvalid:
+		return "auth_invalid"
+	case ErrGatewayAuth:
+		return "gateway_auth"
 	case ErrNotFound:
 		return "not_found"
 	case ErrServer:
@@ -88,10 +94,18 @@ type Error struct {
 	Kind   ErrKind
 	Status int
 	Msg    string
+	// Challenge 是响应头 WWW-Authenticate 的值（截断到 160 字符）。
+	// 上游 APISIX 拒掉凭证时只把死因写在这里（error="invalid_token"），
+	// 正文是一页 openresty HTML —— 与"中间代理页"共用同一形态，必须靠它区分。
+	Challenge string
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("upstream %s (http %d): %s", e.Kind, e.Status, e.Msg)
+	ch := ""
+	if e.Challenge != "" {
+		ch = " (www-authenticate: " + e.Challenge + ")"
+	}
+	return fmt.Sprintf("upstream %s (http %d)%s: %s", e.Kind, e.Status, ch, e.Msg)
 }
 
 // hardMarkers 余额不足关键词（小写比较 + 中文原文比较双通道）。
@@ -498,7 +512,20 @@ func isPromptTooLongStatus(status int) bool {
 //  7. 404 / 5xx / 其他 4xx —— 与限流无关的常规分类。
 //
 
-func Classify(status int, body string) ErrKind {
+// Classify 只看状态码与正文（兼容旧调用点：无挑战头）。
+func Classify(status int, body string) ErrKind { return ClassifyResp(status, body, "") }
+
+// ClassifyResp 是分类真身：额外看 WWW-Authenticate。
+//
+// 为什么需要它：国内版上游（APISIX）拒掉凭证时回的是
+// "<html>401 Authorization Required</html>"，死因只在响应头里：
+//
+//	WWW-Authenticate: Bearer realm="copilot", error="invalid_token"
+//
+// 正文形态与"中间代理页/边缘抖动"完全一样，只按正文判会把两类混为一谈：
+//   - 真失效当代理页 → 账号留在池里，每次命中都回 401（用户看到一页 openresty）；
+//   - 代理页当失效 → 健康号被停用。
+func ClassifyResp(status int, body, challenge string) ErrKind {
 	if status == http.StatusPaymentRequired {
 		return ErrHardCredit
 	}
@@ -575,6 +602,19 @@ func Classify(status int, body string) ErrKind {
 			return ErrModelBlocked
 		}
 		return ErrNotFound
+	}
+	if status == http.StatusUnauthorized {
+		// 12153 已在 sessionDeadMarkers 分支判过，这里只剩"网关层 401"。
+		lowCh := strings.ToLower(challenge)
+		if strings.Contains(lowCh, "invalid_token") || strings.Contains(lowCh, "invalid token") {
+			// 网关指名道姓说凭证无效：真失效，先刷新一次，仍失败才停用。
+			return ErrAuthInvalid
+		}
+		if looksLikeHTMLBlockPage(body) {
+			// 有 HTTP 401 页面但没给挑战头：多半是代理/边缘把请求挡在业务之前，
+			// 与账号健康无关（重试即过），只做短冷却。
+			return ErrGatewayAuth
+		}
 	}
 	if status >= 500 {
 		// 模型级业务码即使在 5xx 也不罚账号：hub #499 实测 11134 以 HTTP 500 送达，
@@ -1004,8 +1044,9 @@ func (c *Client) doJSONOnce(req *http.Request) (json.RawMessage, bool, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		kind := Classify(resp.StatusCode, string(raw))
-		return nil, false, &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
+		ch := truncate(strings.TrimSpace(resp.Header.Get("Www-Authenticate")), 160)
+		kind := ClassifyResp(resp.StatusCode, string(raw), ch)
+		return nil, false, &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200), Challenge: ch}
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -1132,7 +1173,18 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte, clientIP string, meta Cha
 
 // ChatStreamContext 发 chat 请求并返回原始 SSE body 流，支持通过 ctx 监听下游客户端生命周期。
 // 当下游取消（如点击“停止生成”）时，立即中断向上游发出的 HTTP 请求并释放资源。
+// ChatStreamContext 保持原签名（内部转调 Ex 版）。
 func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byte, clientIP string, meta ChatMeta) (rc io.ReadCloser, status int, respBody []byte, err error) {
+	rc, status, respBody, _, err = c.ChatStreamContextEx(ctx, a, body, clientIP, meta)
+	return rc, status, respBody, err
+}
+
+// ChatStreamContextEx 同 ChatStreamContext，额外返回响应头里的 WWW-Authenticate。
+//
+// 为什么需要：上游 APISIX 拒凭证时回 HTML 401，死因只在挑战头里；聊天路径的
+// 分类发生在**调用方**（handler），不把挑战头带出去就只能按正文判，
+// 于是"凭证真失效"与"代理页抖动"无法区分。
+func (c *Client) ChatStreamContextEx(ctx context.Context, a *auth.Auth, body []byte, clientIP string, meta ChatMeta) (rc io.ReadCloser, status int, respBody []byte, challenge string, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1147,7 +1199,7 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		url := c.chatBase(a) + path
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(prepared))
 		if err != nil {
-			return nil, 0, nil, err
+			return nil, 0, nil, "", err
 		}
 		c.ChatHeaders(req, a, clientIP, meta)
 		var reqCtx context.Context
@@ -1158,10 +1210,10 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		if err != nil {
 			cancel()
 			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-				return nil, 0, nil, ctx.Err()
+				return nil, 0, nil, "", ctx.Err()
 			}
 			log.Printf("ERR: [upstream] chat_stream uid=%s: transport error: %v", logfmt.UID8(a.UID), err)
-			return nil, 0, nil, err
+			return nil, 0, nil, "", err
 		}
 		if resp.StatusCode >= 400 {
 			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -1174,17 +1226,18 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 			if attempt < len(c.chatPaths(a))-1 && chatFallbackHTTPStatus(resp.StatusCode) {
 				continue
 			}
-			return nil, resp.StatusCode, raw, nil
+			ch := truncate(strings.TrimSpace(resp.Header.Get("Www-Authenticate")), 160)
+			return nil, resp.StatusCode, raw, ch, nil
 		}
 		// 成功分支：cancel 所有权交给 monitorBody（其 Close 会 cancel）；
 		// IdleTimeout<=0 时 monitorBody 原样返回底流、无人调 cancel——可接受：
 		// ctx 无 deadline 无 goroutine，连接由 resp.Body.Close 正常清理。
-		return monitorBody(resp.Body, c.IdleTimeout, cancel), resp.StatusCode, nil, nil
+		return monitorBody(resp.Body, c.IdleTimeout, cancel), resp.StatusCode, nil, "", nil
 	}
 	if cancel != nil {
 		cancel()
 	}
-	return nil, 0, nil, nil
+	return nil, 0, nil, "", nil
 }
 
 // chatPaths 返回按 realm 的 chat 路径候选序列：
@@ -2509,6 +2562,21 @@ func (c *Client) DailyChatGlobal(a *auth.Auth) error {
 		return fmt.Errorf("HTTP %d: %s", status, string(respBody))
 	}
 	return nil
+}
+
+// IsAuthRetryable 报告该错误是否值得"刷新 token 后重试一次"。
+//
+// 只认网关层 401 的两种：
+//   - ErrAuthInvalid：网关点名 invalid_token（凭证真失效，刷新可能救回）；
+//   - ErrGatewayAuth：401 + HTML 但无挑战头（代理/边缘抖动，重试常即过）。
+//
+// 其余错误刷新无效，重试只会多打一次上游。
+func IsAuthRetryable(err error) bool {
+	var ue *Error
+	if !errors.As(err, &ue) {
+		return false
+	}
+	return ue.Kind == ErrAuthInvalid || ue.Kind == ErrGatewayAuth
 }
 
 // IsAlreadyCheckin 报告 err 是否表示"今天已签到"（上游幂等拒绝重复签到）。
