@@ -206,10 +206,7 @@ Docker 操作注意（WSL 调宿主 docker.exe）：
     3. 分布/时序类断言必须注入确定性时钟（`Pool.SetClock`）或零化时间窗；真实时钟下同一实现
        会随机器快慢漂移（实测 11%~23%），这类用例既不能当门禁也会 flake。
     4. 修 bug 时同步写"回退即变红"的回归用例：只断言公式常数的用例等于没测（详见路线图 §T.7.1）。
-    5. **测试不得依赖真实网络**：用 `newFakeUpstream` 之类的注入设备；`upstream.New()`
-       默认 `GlobalEnabled=false`（生产由 cmd/server 按配置显式开启），所以**不要**在测试里
-       把它打开——那会让"池内有 global 账号 + 读模型清单"的用例真的出网（曾发生过一次）。
-    6. **门禁必须包含 `TZ=UTC go test ./... -count=1`**：本仓所有日界/时段已统一为固定 CST
+    5. **门禁必须包含 `TZ=UTC go test ./... -count=1`**：本仓所有日界/时段已统一为固定 CST
        （`internal/cstime`），本机（Windows/macOS 在中国区）`time.Local == CST`，所以
        "生成用 CST、解析用本地"这类错配在开发机上**完全不可见**（第十一轮审计实测：
        `nextFire` 改 CST 后本机四道门禁全绿，`TZ=UTC` 一跑立刻 8 条红）。
@@ -239,6 +236,7 @@ Docker 操作注意（WSL 调宿主 docker.exe）：
     上游客户端/SSE      workbuddy2api/internal/upstream/
     管理面板            workbuddy2api/internal/panel/
     原生发行脚本        workbuddy2api/scripts/native/
+    发布/清单/CDN 刷新  workbuddy2api/scripts/update/（release.ps1 Step 6/6 自动 purge jsDelivr，见踩坑清单 #34）
     Docker 活部署        release/workbuddy2api-offline/
     原生发行物          release/native/
     Agent 配置中心       /mnt/d/kk/agent配置/（manifest + sync_to_clients.py + 模板）
