@@ -2,7 +2,8 @@
 release.ps1 -- one-command release for the workbuddy2api public snapshot.
 ASCII ONLY (PS 5.1 compatible; also runs on PS7).
 
-Steps: build exe -> manifest -> commit+push snapshot -> create GitHub release -> upload assets.
+Steps: build exe -> manifest -> commit+push snapshot -> create GitHub release -> upload assets
+       -> purge CDN manifest cache (jsDelivr) and verify it serves the new version.
 
 Usage (from the snapshot root or anywhere):
   pwsh -File scripts\update\release.ps1 -Version 1.11.8
@@ -14,7 +15,14 @@ param(
   [Parameter(Mandatory=$true)][string]$Version,
   [switch]$SkipPush,
   [string]$Owner = 'susuqqim',
-  [string]$Repo  = 'workbuddy2api'
+  [string]$Repo  = 'workbuddy2api',
+  # CDN side (jsDelivr gh/<cdnOwner>/<cdnRepo>@<cdnRef>): defaults to the same repo.
+  [string]$CdnOwner = '',
+  [string]$CdnRepo  = '',
+  [string]$CdnRef   = 'main',
+  [switch]$SkipCdn,
+  # By default a stale CDN fails the release; this switch downgrades it to a warning.
+  [switch]$AllowStaleCdn
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -23,12 +31,12 @@ Set-Location $snap
 function Step($m) { Write-Host ("==> " + $m) -ForegroundColor Cyan }
 function Fail($m) { Write-Host ("ERROR: " + $m) -ForegroundColor Red; exit 1 }
 
-Step "0/5 sanity: version + worktree"
+Step "0/6 sanity: version + worktree"
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "Version must be x.y.z" }
 $tag = 'v' + $Version
 & git rev-parse --git-dir *> $null; if ($LASTEXITCODE -ne 0) { Fail "not a git repo: $snap" }
 
-Step "1/5 build wb2api-core.exe"
+Step "1/6 build wb2api-core.exe"
 $env:CGO_ENABLED = '0'
 & go build -trimpath -ldflags="-w" -o ".\wb2api-core.exe" .\cmd\server
 if ($LASTEXITCODE -ne 0) { Fail "go build failed" }
@@ -36,7 +44,7 @@ $sha = (Get-FileHash .\wb2api-core.exe -Algorithm SHA256).Hash.ToLower()
 $size = (Get-Item .\wb2api-core.exe).Length
 Write-Host ("  built: sha256=" + $sha.Substring(0,16) + ".. size=" + $size)
 
-Step "2/5 manifest (latest.json + SHA256SUMS)"
+Step "2/6 manifest (latest.json + SHA256SUMS)"
 & (Join-Path $here 'make-manifest.ps1') -Version $Version -Binary .\wb2api-core.exe -RepoOwner $Owner -RepoName $Repo
 if (-not (Test-Path .\latest.json)) { Fail "latest.json not produced" }
 $m = Get-Content .\latest.json -Raw | ConvertFrom-Json
@@ -44,13 +52,13 @@ if ($m.version -ne $Version -or $m.sha256 -ne $sha) { Fail "manifest mismatch (v
 
 if ($SkipPush) { Write-Host "SkipPush: stopping after manifest"; exit 0 }
 
-Step "3/5 commit + push snapshot"
+Step "3/6 commit + push snapshot"
 & git add -A
 & git -c user.name="workbuddy2api" -c user.email="noreply@local" commit -m ("release: " + $tag) 2>$null
 & git push origin main
 if ($LASTEXITCODE -ne 0) { Fail "git push failed" }
 
-Step "4/5 create GitHub release $tag"
+Step "4/6 create GitHub release $tag"
 $cred = "protocol=https`nhost=github.com`n`n" | & git credential fill 2>$null
 $tok = ($cred | Where-Object { $_ -like 'password=*' } | Select-Object -First 1) -replace '^password=',''
 if (-not $tok) { Fail "no GitHub credential in Git Credential Manager" }
@@ -63,7 +71,7 @@ try {
 }
 Write-Host ("  release id=" + $rel.id + " url=" + $rel.html_url)
 
-Step "5/5 upload assets"
+Step "5/6 upload assets"
 $assets = @(
   @{ p = '.\wb2api-core.exe'; n = 'wb2api-core.exe' },
   @{ p = '.\latest.json';     n = 'latest.json' },
@@ -76,5 +84,23 @@ foreach ($a in $assets) {
     $r = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $url -Headers $hdr -InFile $a.p -ContentType 'application/octet-stream' -TimeoutSec 600
     Write-Host ("  uploaded " + $a.n + " HTTP " + $r.StatusCode)
   } catch { Fail ("upload failed: " + $a.n + " " + $_.Exception.Message) }
+}
+Step "6/6 purge CDN manifest cache + verify"
+if ($SkipCdn) {
+  Write-Host "SkipCdn: CDN cache not purged; users may keep seeing the previous version for a while"
+} else {
+  if (-not $CdnOwner) { $CdnOwner = $Owner }
+  if (-not $CdnRepo)  { $CdnRepo  = $Repo }
+  & (Join-Path $here 'purge-cdn.ps1') -Manifest '.\latest.json' -Owner $CdnOwner -Repo $CdnRepo -Ref $CdnRef
+  $cdnExit = $LASTEXITCODE
+  if ($cdnExit -eq 1) {
+    if ($AllowStaleCdn) {
+      Write-Host "WARN: CDN still serves the old manifest (AllowStaleCdn: continuing)" -ForegroundColor Yellow
+    } else {
+      Fail "CDN still serves the old manifest; users keep seeing the previous version (use -AllowStaleCdn to relax)"
+    }
+  } elseif ($cdnExit -eq 2) {
+    Write-Host "WARN: CDN unreachable from this host; freshness not verified (release itself succeeded)" -ForegroundColor Yellow
+  }
 }
 Write-Host ("DONE: " + $rel.html_url + "  (users get the update via wb2api-update.ps1 once latest.json is on main)") -ForegroundColor Green
